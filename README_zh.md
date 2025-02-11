@@ -46,8 +46,10 @@ OpenRLHF 是一个基于 Ray、DeepSpeed 和 HF Transformers 构建的高性能 
 
 ## 特性  
 
-- 基于 Ray 的分布式 [PPO](./examples/scripts/train_ppo_llama_ray.sh) 和 [REINFORCE++/RLOO](./examples/scripts/train_reinforce_llama_ray.sh) 实现。  
+- 基于 Ray 的分布式 [PPO](./examples/scripts/train_ppo_llama_ray.sh) 和 [REINFORCE++/RLOO/REINFORCE++-baseline](./examples/scripts/train_reinforce_llama_ray.sh) 实现。  
 - 支持对 [超过 700 亿参数的模型](./examples/scripts/train_ppo_llama_ray_70b.sh) 进行完整的 RLHF 微调。  
+- 支持基于 Ray 和 Hybrid Engine 的 [PPO](./examples/scripts/train_ppo_llama_ray_hybrid_engine.sh) 和 [REINFORCE++/RLOO/REINFORCE++-baseline](./examples/scripts/train_reinforce_llama_ray_hybrid_engine.sh) (`--colocate_all_models`, `--vllm_enable_sleep` and `--vllm_gpu_memory_utilization 0.5`)
+- [Ray-based Reinforced Finetuning](./examples/scripts/train_ppo_llama_with_reward_fn.sh)
 - 集成 vLLM，加速 RLHF 任务中的样本生成（`--vllm_num_engines`）。  
 - 支持多个奖励模型（`--reward_pretrain model1,model2...`）和远程奖励模型（`--remote_rm_url`）。  
 - 实现 [DPO（直接偏好优化）/IPO/cDPO](./examples/scripts/train_dpo_llama.sh) 和 [Kahneman-Tversky Optimization（KTO）](./examples/scripts/train_kto_llama.sh)。  
@@ -92,7 +94,7 @@ OpenRLHF 是一个基于 Ray、DeepSpeed 和 HF Transformers 构建的高性能 
 ```bash
 # 启动 docker container
 docker run --runtime=nvidia -it --rm --shm-size="10g" --cap-add=SYS_ADMIN -v $PWD:/openrlhf nvcr.io/nvidia/pytorch:24.07-py3 bash
-sudo pip uninstall xgboost transformer_engine flash_attn -y
+sudo pip uninstall xgboost transformer_engine flash_attn pynvml -y
 
 # pip install
 pip install openrlhf
@@ -345,8 +347,8 @@ ray job submit --address="http://127.0.0.1:8265" \
   --load_checkpoint \
   --use_wandb {wandb_token}
 
-# 支持 REINFORCE++  | RLOO 
-# --advantage_estimator reinforce | rloo
+# 支持 REINFORCE++  | RLOO  | REINFORCE++-baseline
+# --advantage_estimator reinforce | rloo | reinforce_baseline
 
 # 支持远程 reward model (HTTP)
 # --remote_rm_url http://localhost:5000/get_reward
@@ -360,7 +362,9 @@ ray job submit --address="http://127.0.0.1:8265" \
 > 您也可以通过 ``setup_commands`` 让 Ray 自动初始化环境, 比如 `--runtime-env-json='{"setup_commands": ["pip install openrlhf[vllm]"]}'`
 
 > [!NOTE]
-> OPENRLHF's RLOO 基于 REINFORCE++ 修改而来, 和原版的实现不同.
+> OpenRLHF 中的 RLOO 和 REINFORCE++-baseline 是基于 REINFORCE++ 的修改版本。  
+> 1. OpenRLHF 中的 RLOO 采用了 **逐 token KL 奖励** 和 **PPO 损失函数**。  
+> 2. REINFORCE++-baseline 使用了相同 prompt 多次采样的 reward 均值作为 baseline。
 
 > [!NOTE]
 > 如果您由于某种原因，在 deepspeed 设置显卡设备时遇到与索引超出范围相关的错误，您可以尝试设置环境变量 [`RAY_EXPERIMENTAL_NOSET_*_VISIBLE_DEVICES`](openrlhf/trainer/ray/utils.py)。
@@ -399,7 +403,7 @@ python -m openrlhf.cli.lora_combiner \
 > 数据已经过时; 请参考后面的调优指南重新测试
 
 ## 调优指南
-为了获得最佳的性能，我们建议您分配节点为 `vLLM:Actor:Critic = 1:1:1`。例如，对于 70B 模型以及 48 张 A100，建议分配 16 张以上 A100 给 vLLM Engine，16 张给 Actor 模型，以及最后 16 张给 Critic 模型，同时开启 `--colocate_critic_reward`, `--colocate_actor_ref` 或者 `--ref_reward_offload (可选)` 选项合并部分节点。最后您应该尽可能增大 `--rollout_micro_batch_size` ，以及减小 vLLM 的 TP 切分数量。训练阶段的 `micro_train_batch_size` 也是越大越好，请同时使用 `--packing_samples` 。当 GPU 数量足够时请关闭 `--adam_offload` 以及启用 `--overlap_comm`. 对于多节点 RLHF, 请使用 `--vllm_sync_backend nccl` with vLLM 0.7.2+. 启用 `enable_prefix_caching` 对于 vLLM 当 ``n_samples_per_prompts`` > 1. 当模型规模和上下文长度较小时，使用 Hybrid Engine `--colocate_all_models` 和 `--vllm_enable_sleep`，而不是分布式 RLHF。
+为了获得最佳的性能，我们建议您分配节点为 `vLLM:Actor:Critic = 1:1:1`。例如，对于 70B 模型以及 48 张 A100，建议分配 16 张以上 A100 给 vLLM Engine，16 张给 Actor 模型，以及最后 16 张给 Critic 模型，同时开启 `--colocate_critic_reward`, `--colocate_actor_ref` 或者 `--ref_reward_offload (可选)` 选项合并部分节点。最后您应该尽可能增大 `--rollout_micro_batch_size` ，以及减小 vLLM 的 TP 切分数量。训练阶段的 `micro_train_batch_size` 也是越大越好，请同时使用 `--packing_samples` 。当 GPU 数量足够时请关闭 `--adam_offload` 以及启用 `--overlap_comm`. 对于多节点 RLHF, 请使用 `--vllm_sync_backend nccl` with vLLM 0.7.2+. 启用 `enable_prefix_caching` 对于 vLLM 当 ``n_samples_per_prompts`` > 1. 当模型规模和上下文长度较小时，使用 Hybrid Engine `--colocate_all_models` 和 `--vllm_enable_sleep`，而不是分布式 RLHF。对于尺寸大的基础模型, 如果出现 OOM, 请不要使用任何`--colocate_xxxx`选项。
 
 ## 使用 OpenRLHF 的公司和组织
 
