@@ -1,4 +1,8 @@
 import os
+import json
+import re
+import logging
+from datetime import datetime
 
 import numpy as np
 import ray
@@ -10,6 +14,118 @@ from openrlhf.utils.logging_utils import init_logger
 
 logger = init_logger(__name__)
 
+
+# <tools>
+def get_safe_globals():
+    """Create a safe globals dictionary with allowed modules."""
+    safe_modules = {
+        'math': __import__('math'),
+        'random': __import__('random'),
+        'datetime': __import__('datetime'),
+        'json': __import__('json'),
+        'statistics': __import__('statistics'),
+        'collections': __import__('collections'),
+        'numpy': __import__('numpy'),
+        're': __import__('re'),
+        'requests': __import__('requests'),
+        
+        # Core chemistry libraries
+        'rdkit': try_import('rdkit'),
+        'rdkit.Chem': try_import('rdkit.Chem', fromlist=['Chem']),
+        'rdkit.Chem.AllChem': try_import('rdkit.Chem.AllChem', fromlist=['AllChem']),
+        'rdkit.Chem.Draw': try_import('rdkit.Chem.Draw', fromlist=['Draw']),
+        
+        # Molecular docking and analysis
+        'openbabel': try_import('openbabel'),
+        
+        # Bio-informatics
+        'Bio': try_import('Bio'),  # BioPython
+        'Bio.PDB': try_import('Bio.PDB', fromlist=['PDB']),
+        
+        # Atomic Simulation Environment
+        'ase': try_import('ase'),
+    }
+    
+    return {
+        '__builtins__': __builtins__,
+        **{k: v for k, v in safe_modules.items() if v is not None}
+    }
+
+def try_import(module_name, fromlist=None):
+    """Safely try to import a module, return None if not available."""
+    try:
+        if fromlist:
+            return __import__(module_name, fromlist=fromlist)
+        return __import__(module_name)
+    except ImportError:
+        logger.warning(f"{module_name} not available - some chemistry operations will be limited")
+        return None
+
+def run_python_code(code: str):
+    from io import StringIO
+    import sys
+    
+    # Create string buffer to capture output
+    output_buffer = StringIO()
+    # Store the original stdout
+    original_stdout = sys.stdout
+    
+    try:
+        # Log the exact code being executed with unique delimiters
+        logger.info("-----BEGIN EXTRACTED CODE-----")
+        logger.info(code)
+        logger.info("-----END EXTRACTED CODE-----")
+        
+        # Redirect stdout to our buffer
+        sys.stdout = output_buffer
+        
+        # Create a dictionary to store local variables
+        local_dict = {}
+        
+        # Execute the code with safe globals
+        exec(code, get_safe_globals(), local_dict)
+        
+        # Get any printed output
+        printed_output = output_buffer.getvalue()
+        
+        # Log the exact execution result with unique delimiters
+        logger.info("-----BEGIN EXECUTION RESULT-----")
+        
+        # If there was printed output, return that
+        if printed_output.strip():
+            result = printed_output.strip()
+        # If there's a specific 'result' variable, return that
+        elif 'result' in local_dict:
+            result = str(local_dict['result'])
+        # Otherwise return the last assigned variable
+        elif local_dict:
+            result = str(list(local_dict.values())[-1])
+        # If nothing was printed or assigned, return success message
+        else:
+            result = "Code executed successfully"
+            
+        logger.info(result)
+        logger.info("-----END EXECUTION RESULT-----")
+        
+        return result
+        
+    except Exception as e:
+        error_msg = f"Error executing code: {str(e)}"
+        logger.info("-----BEGIN EXECUTION RESULT-----")
+        logger.info(error_msg)
+        logger.info("-----END EXECUTION RESULT-----")
+        return error_msg
+    finally:
+        # Restore the original stdout
+        sys.stdout = original_stdout
+        output_buffer.close()
+
+
+tools = {
+    "run_python_code": run_python_code,
+    "eval_python_code": run_python_code,  # Keep the alias for backward compatibility
+}
+# </tools>
 
 @ray.remote
 def get_all_env_variables():
@@ -41,6 +157,23 @@ class LLMRayActor:
         self.responses = {}
 
         self.llm = LLM(*args, **kwargs)
+
+        # Set up detailed logging for tool calls
+        self.tool_logger = logging.getLogger('tool_calls')
+        self.tool_logger.setLevel(logging.DEBUG)
+        
+        # Create logs directory if it doesn't exist
+        os.makedirs('logs', exist_ok=True)
+        
+        # Create a new log file with timestamp
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        log_file = f'logs/tool_calls_{timestamp}.log'
+        file_handler = logging.FileHandler(log_file)
+        
+        # Set format for logging
+        formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+        file_handler.setFormatter(formatter)
+        self.tool_logger.addHandler(file_handler)
 
     def init_process_group(self, master_address, master_port, rank_offset, world_size, group_name, backend, use_ray):
         return self.llm.collective_rpc(
@@ -80,6 +213,87 @@ class LLMRayActor:
             if len(requests) > 0:
                 # For now we assume that all requests have the same sampling params
                 responses = self.llm.generate(sampling_params=sampling_params, prompt_token_ids=requests)
+                
+                # Instead of trying to decode the tokens, we'll use empty strings as initial prompts
+                # since we're working with token IDs directly
+                current_prompts = [""] * len(responses)
+                
+                self.tool_logger.info("="*80)
+                self.tool_logger.info("NEW BATCH OF REQUESTS")
+                self.tool_logger.info("="*80)
+                self.tool_logger.info(f"Processing {len(responses)} responses")
+                self.tool_logger.info("="*80)
+
+                # Create patterns for all tool types
+                tool_patterns = {
+                    'PYTHON': (tools['run_python_code'], re.compile(r"<PYTHON>(.*?)</PYTHON>", re.DOTALL | re.IGNORECASE)),
+                    'eval_python_code': (tools['eval_python_code'], re.compile(r"<EVAL>(.*?)</EVAL>", re.DOTALL | re.IGNORECASE)),
+                }
+
+                for i, response in enumerate(responses):
+                    self.tool_logger.info(f"\nPROCESSING RESPONSE {i}")
+                    self.tool_logger.info("-"*40)
+                    self.tool_logger.info("Initial generation:")
+                    self.tool_logger.info(f"{response.outputs[0].text}\n")
+                    
+                    original_response = response
+                    tool_call_count = 0
+                    tool_call_budget = 3
+                    current_prompt = current_prompts[i]
+                    
+                    while tool_call_budget > 0:
+                        # Find the earliest tool call of any type
+                        earliest_match = None
+                        earliest_pos = float('inf')
+                        matched_tool = None
+                        matched_func = None
+                        
+                        for tool_name, (func, pattern) in tool_patterns.items():
+                            match = pattern.search(response.outputs[0].text)
+                            if match and match.start() < earliest_pos:
+                                earliest_match = match
+                                earliest_pos = match.start()
+                                matched_tool = tool_name
+                                matched_func = func
+                        
+                        if earliest_match:
+                            tool_call_count += 1
+                            self.tool_logger.info(f"TOOL EXECUTION {tool_call_count} - {matched_tool}")
+                            self.tool_logger.info("-"*30)
+                            
+                            code = earliest_match.group(1).strip()
+                            self.tool_logger.info(f"Extracted code:\n{code}")
+                            tool_call_budget -= 1
+                            
+                            self.tool_logger.info(f"Executing {matched_tool}...")
+                            result = matched_func(code)
+                            self.tool_logger.info(f"Execution result:\n{result}\n")
+                            
+                            # Build new prompt as a text string
+                            prompt = (current_prompt + 
+                                    response.outputs[0].text[:earliest_match.end()] + 
+                                    f"\n<OUTPUT>{result}</OUTPUT>\n")
+                            
+                            self.tool_logger.info("Regenerating with new prompt:")
+                            self.tool_logger.info("-"*30)
+                            self.tool_logger.info(f"{prompt}")
+                            self.tool_logger.info("-"*30)
+                            
+                            # Generate with text prompt instead of token IDs
+                            response = self.llm.generate(sampling_params=sampling_params, prompts=[prompt])[0]
+                            current_prompt = prompt  # Update current prompt for next iteration
+                            self.tool_logger.info(f"New generation:\n{response.outputs[0].text}\n")
+                        else:
+                            break
+                    
+                    self.tool_logger.info(f"\nFINAL STATE OF RESPONSE {i}")
+                    self.tool_logger.info("-"*40)
+                    self.tool_logger.info(f"Total tool executions: {tool_call_count}")
+                    self.tool_logger.info("Original response:")
+                    self.tool_logger.info(f"{original_response.outputs[0].text}\n")
+                    self.tool_logger.info("Final response:")
+                    self.tool_logger.info(f"{response.outputs[0].text}\n")
+                    self.tool_logger.info("="*80)
             else:
                 responses = []
 

@@ -152,6 +152,12 @@ def reward_func(queries, prompts):
         max_score = 0.0
         best_smiles = None
         
+        # Calculate word count reward only if answer tags are present
+        word_count_reward = 0.0
+        if "<answer>" in response and "</answer>" in response:
+            words = response.split()
+            word_count_reward = len(words) * 0.05
+        
         if smiles_strings:
             for smiles in smiles_strings:
                 try:
@@ -171,6 +177,9 @@ def reward_func(queries, prompts):
                 except Exception as e:
                     print(f"Error processing molecule {smiles}: {str(e)}")
                     continue
+        
+        # Add word count reward to the final score
+        max_score += word_count_reward
         
         # Record if we have a new best score
         if max_score > current_record and best_smiles is not None:
