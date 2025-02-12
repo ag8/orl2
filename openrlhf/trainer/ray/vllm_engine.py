@@ -29,18 +29,100 @@ def get_safe_globals():
         're': __import__('re'),
         'requests': __import__('requests'),
         
-        # Core chemistry libraries
+        # Core RDKit modules
         'rdkit': try_import('rdkit'),
-        'rdkit.Chem': try_import('rdkit.Chem', fromlist=['Chem']),
-        'rdkit.Chem.AllChem': try_import('rdkit.Chem.AllChem', fromlist=['AllChem']),
-        'rdkit.Chem.Draw': try_import('rdkit.Chem.Draw', fromlist=['Draw']),
+        'Chem': try_import('rdkit.Chem'),
+        'AllChem': try_import('rdkit.Chem.AllChem'),
+        
+        # Drawing and Visualization
+        'Draw': try_import('rdkit.Chem.Draw'),
+        'IPythonConsole': try_import('rdkit.Chem.Draw.IPythonConsole'),
+        'rdDepictor': try_import('rdkit.Chem.rdDepictor'),
+        
+        # Molecular Descriptors and Properties
+        'Descriptors': try_import('rdkit.Chem.Descriptors'),
+        'Descriptors3D': try_import('rdkit.Chem.Descriptors3D'),
+        'rdMolDescriptors': try_import('rdkit.Chem.rdMolDescriptors'),
+        'Crippen': try_import('rdkit.Chem.Crippen'),
+        'QED': try_import('rdkit.Chem.QED'),
+        'Fragments': try_import('rdkit.Chem.Fragments'),
+        'MolSurf': try_import('rdkit.Chem.MolSurf'),
+        'GraphDescriptors': try_import('rdkit.Chem.GraphDescriptors'),
+        'rdMolTransforms': try_import('rdkit.Chem.rdMolTransforms'),
+        
+        # Structure Analysis and Manipulation
+        'BRICS': try_import('rdkit.Chem.BRICS'),
+        'ChemicalFeatures': try_import('rdkit.Chem.ChemicalFeatures'),
+        'rdFMCS': try_import('rdkit.Chem.rdFMCS'),
+        'rdDecomposition': try_import('rdkit.Chem.rdDecomposition'),
+        'rdqueries': try_import('rdkit.Chem.rdqueries'),
+        'rdMolOps': try_import('rdkit.Chem.rdmolops'),
+        'AllChem': try_import('rdkit.Chem.AllChem'),
+        'rdMMPA': try_import('rdkit.Chem.rdMMPA'),
+        
+        # 3D Structure and Conformers
+        'rdDistGeom': try_import('rdkit.Chem.rdDistGeom'),
+        'rdForceFieldHelpers': try_import('rdkit.Chem.rdForceFieldHelpers'),
+        'rdMolAlign': try_import('rdkit.Chem.rdMolAlign'),
+        'rdMolTransforms': try_import('rdkit.Chem.rdMolTransforms'),
+        
+        # Chemical Reactions
+        'rdChemReactions': try_import('rdkit.Chem.rdChemReactions'),
+        'rdDeprotect': try_import('rdkit.Chem.rdDeprotect'),
+        'EnumerateHeterocycles': try_import('rdkit.Chem.EnumerateHeterocycles'),
+        'EnumerateStereoisomers': try_import('rdkit.Chem.EnumerateStereoisomers'),
+        
+        # Fingerprints and Similarity
+        'DataStructs': try_import('rdkit.DataStructs'),
+        'rdFingerprintGenerator': try_import('rdkit.Chem.rdFingerprintGenerator'),
+        'MACCSkeys': try_import('rdkit.Chem.MACCSkeys'),
+        'AtomPairs': try_import('rdkit.Chem.AtomPairs'),
+        'rdMHFPFingerprint': try_import('rdkit.Chem.rdMHFPFingerprint'),
+        
+        # Structure Standardization and Cleanup
+        'MolStandardize': try_import('rdkit.Chem.MolStandardize'),
+        'SaltRemover': try_import('rdkit.Chem.SaltRemover'),
+        'rdAbbreviations': try_import('rdkit.Chem.rdAbbreviations'),
+        
+        # File I/O and Format Handling
+        'SDWriter': try_import('rdkit.Chem.SDWriter'),
+        'SDMolSupplier': try_import('rdkit.Chem.SDMolSupplier'),
+        'SmilesMolSupplier': try_import('rdkit.Chem.SmilesMolSupplier'),
+        'PandasTools': try_import('rdkit.Chem.PandasTools'),
+        'rdmolfiles': try_import('rdkit.Chem.rdmolfiles'),
+        
+        # Scaffolds and Structure Analysis
+        'Scaffolds': try_import('rdkit.Chem.Scaffolds'),
+        'MurckoScaffold': try_import('rdkit.Chem.Scaffolds.MurckoScaffold'),
+        
+        # Advanced Features
+        'rdEHTTools': try_import('rdkit.Chem.rdEHTTools'),
+        'rdDetermineBonds': try_import('rdkit.Chem.rdDetermineBonds'),
+        'rdRGroupDecomposition': try_import('rdkit.Chem.rdRGroupDecomposition'),
+        'rdSubstructLibrary': try_import('rdkit.Chem.rdSubstructLibrary'),
+        'rdTautomerQuery': try_import('rdkit.Chem.rdTautomerQuery'),
+        
+        # Coordinate Generation and 2D/3D
+        'rdCoordGen': try_import('rdkit.Chem.rdCoordGen'),
+        'rdDetermineBonds': try_import('rdkit.Chem.rdDetermineBonds'),
+        'rdShapeHelpers': try_import('rdkit.Chem.rdShapeHelpers'),
+        
+        # Stereochemistry
+        'rdCIPLabeler': try_import('rdkit.Chem.rdCIPLabeler'),
+        
+        # Registration and Hashing
+        'RegistrationHash': try_import('rdkit.Chem.RegistrationHash'),
+        
+        # Periodic Table and Basic Chemistry
+        'PeriodicTable': try_import('rdkit.Chem.PeriodicTable'),
+        'rdchem': try_import('rdkit.Chem.rdchem'),
         
         # File format conversion
         'openbabel': try_import('openbabel'),
         
         # Bio-informatics
-        'Bio': try_import('Bio'),  # BioPython
-        'Bio.PDB': try_import('Bio.PDB', fromlist=['PDB']),
+        'Bio': try_import('Bio'),
+        'Bio.PDB': try_import('Bio.PDB'),
         
         # Atomic Simulation Environment
         'ase': try_import('ase'),
