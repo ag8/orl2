@@ -242,26 +242,27 @@ class LLMRayActor:
                     current_prompt = current_prompts[i]
                     
                     while tool_call_budget > 0:
-                        # Find the earliest tool call of any type
-                        earliest_match = None
-                        earliest_pos = float('inf')
+                        # Find the last tool call of any type
+                        last_match = None
+                        last_pos = -1
                         matched_tool = None
                         matched_func = None
                         
                         for tool_name, (func, pattern) in tool_patterns.items():
-                            match = pattern.search(response.outputs[0].text)
-                            if match and match.start() < earliest_pos:
-                                earliest_match = match
-                                earliest_pos = match.start()
+                            # Find all matches and take the last one
+                            matches = list(pattern.finditer(response.outputs[0].text))
+                            if matches and matches[-1].start() > last_pos:
+                                last_match = matches[-1]
+                                last_pos = last_match.start()
                                 matched_tool = tool_name
                                 matched_func = func
                         
-                        if earliest_match:
+                        if last_match:
                             tool_call_count += 1
                             self.tool_logger.info(f"TOOL EXECUTION {tool_call_count} - {matched_tool}")
                             self.tool_logger.info("-"*30)
                             
-                            code = earliest_match.group(1).strip()
+                            code = last_match.group(1).strip()
                             self.tool_logger.info(f"Extracted code:\n{code}")
                             tool_call_budget -= 1
                             
@@ -271,7 +272,7 @@ class LLMRayActor:
                             
                             # Build new prompt as a text string
                             prompt = (current_prompt + 
-                                    response.outputs[0].text[:earliest_match.end()] + 
+                                    response.outputs[0].text[:last_match.end()] + 
                                     f"\n<OUTPUT>{result}</OUTPUT>\n")
                             
                             self.tool_logger.info("Regenerating with new prompt:")

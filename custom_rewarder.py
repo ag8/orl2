@@ -152,11 +152,7 @@ def reward_func(queries, prompts):
         max_score = 0.0
         best_smiles = None
         
-        # Calculate word count reward only if answer tags are present
         word_count_reward = 0.0
-        if "<answer>" in response and "</answer>" in response:
-            words = response.split()
-            word_count_reward = len(words) * 0.05
         
         if smiles_strings:
             for smiles in smiles_strings:
@@ -169,6 +165,11 @@ def reward_func(queries, prompts):
                         if docking_score is not None:
                             positive_docking_score = 0 - docking_score
                             molecule_score = 5 * qed_score + 3 * positive_docking_score
+
+                            # If we're here, also add the extra reward for the word count of the entire response
+                            words = response.split()
+                            word_count_reward = len(words) * 0.05
+                            molecule_score += word_count_reward
                             
                             if molecule_score > max_score:
                                 max_score = molecule_score
