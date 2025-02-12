@@ -1,7 +1,7 @@
 import os
-import json
 import re
 import logging
+import signal
 from datetime import datetime
 
 import numpy as np
@@ -61,7 +61,13 @@ def try_import(module_name, fromlist=None):
         logger.warning(f"{module_name} not available - some chemistry operations will be limited")
         return None
 
-def run_python_code(code: str):
+class TimeoutError(Exception):
+    pass
+
+def timeout_handler(signum, frame):
+    raise TimeoutError("Code execution timed out")
+
+def run_python_code(code: str, timeout_seconds: int = 10):
     from io import StringIO
     import sys
     
@@ -80,10 +86,22 @@ def run_python_code(code: str):
         sys.stdout = output_buffer
         
         # Create a dictionary to store local variables
-        local_dict = {}
+        local_dict: dict[str, object] = {}
         
-        # Execute the code with safe globals
-        exec(code, get_safe_globals(), local_dict)
+        # Set up signal handler for timeout
+        signal.signal(signal.SIGALRM, timeout_handler)
+        signal.alarm(timeout_seconds)
+        
+        try:
+            # Execute the code with safe globals
+            exec(code, get_safe_globals(), local_dict)
+            # Disable the alarm
+            signal.alarm(0)
+        except TimeoutError as e:
+            return f"Error: {str(e)}"
+        finally:
+            # Ensure the alarm is disabled
+            signal.alarm(0)
         
         # Get any printed output
         printed_output = output_buffer.getvalue()
