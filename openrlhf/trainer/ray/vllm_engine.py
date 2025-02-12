@@ -35,7 +35,7 @@ def get_safe_globals():
         'rdkit.Chem.AllChem': try_import('rdkit.Chem.AllChem', fromlist=['AllChem']),
         'rdkit.Chem.Draw': try_import('rdkit.Chem.Draw', fromlist=['Draw']),
         
-        # Molecular docking and analysis
+        # File format conversion
         'openbabel': try_import('openbabel'),
         
         # Bio-informatics
