@@ -54,7 +54,6 @@ def get_safe_globals():
         'BRICS': try_import('rdkit.Chem.BRICS'),
         'ChemicalFeatures': try_import('rdkit.Chem.ChemicalFeatures'),
         'rdFMCS': try_import('rdkit.Chem.rdFMCS'),
-        'rdDecomposition': try_import('rdkit.Chem.rdDecomposition'),
         'rdqueries': try_import('rdkit.Chem.rdqueries'),
         'rdMolOps': try_import('rdkit.Chem.rdmolops'),
         'AllChem': try_import('rdkit.Chem.AllChem'),
@@ -85,9 +84,6 @@ def get_safe_globals():
         'rdAbbreviations': try_import('rdkit.Chem.rdAbbreviations'),
         
         # File I/O and Format Handling
-        'SDWriter': try_import('rdkit.Chem.SDWriter'),
-        'SDMolSupplier': try_import('rdkit.Chem.SDMolSupplier'),
-        'SmilesMolSupplier': try_import('rdkit.Chem.SmilesMolSupplier'),
         'PandasTools': try_import('rdkit.Chem.PandasTools'),
         'rdmolfiles': try_import('rdkit.Chem.rdmolfiles'),
         
@@ -114,7 +110,6 @@ def get_safe_globals():
         'RegistrationHash': try_import('rdkit.Chem.RegistrationHash'),
         
         # Periodic Table and Basic Chemistry
-        'PeriodicTable': try_import('rdkit.Chem.PeriodicTable'),
         'rdchem': try_import('rdkit.Chem.rdchem'),
         
         # File format conversion
