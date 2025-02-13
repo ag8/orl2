@@ -171,17 +171,37 @@ def get_all_env_variables():
     return os.environ
 
 
-@ray.remote
-def execute_python_code(code: str):
+@ray.remote(num_cpus=1)
+def execute_python_code(code: str, execution_id: int):
     """Execute Python code in a separate process"""
     from openrlhf.trainer.ray.vllm_engine import run_python_code
-    return run_python_code(code)
+    logger = logging.getLogger('tool_calls')
+    logger.info(f"\n{'='*20} Execution {execution_id} Start {'='*20}")
+    logger.info(f"Code to execute:\n{code}")
+    try:
+        result = run_python_code(code)
+        logger.info(f"Result:\n{result}")
+    except Exception as e:
+        logger.error(f"Error in execution {execution_id}: {str(e)}")
+        result = f"Error: {str(e)}"
+    logger.info(f"{'='*20} Execution {execution_id} End {'='*20}\n")
+    return result
 
-@ray.remote
-def execute_eval_code(code: str):
+@ray.remote(num_cpus=1)
+def execute_eval_code(code: str, execution_id: int):
     """Execute eval code in a separate process"""
-    from openrlhf.trainer.ray.vllm_engine import run_python_code  # Same function, different name
-    return run_python_code(code)
+    from openrlhf.trainer.ray.vllm_engine import run_python_code
+    logger = logging.getLogger('tool_calls')
+    logger.info(f"\n{'='*20} Execution {execution_id} Start {'='*20}")
+    logger.info(f"Code to execute:\n{code}")
+    try:
+        result = run_python_code(code)
+        logger.info(f"Result:\n{result}")
+    except Exception as e:
+        logger.error(f"Error in execution {execution_id}: {str(e)}")
+        result = f"Error: {str(e)}"
+    logger.info(f"{'='*20} Execution {execution_id} End {'='*20}\n")
+    return result
 
 @ray.remote
 class LLMRayActor:
@@ -246,9 +266,7 @@ class LLMRayActor:
         self.llm.wake_up()
 
     def add_requests(self, actor_rank, *, sampling_params, prompt_token_ids):
-        """
-        Save the requests from actors and generate responses when all actors have sent their requests
-        """
+        """Save the requests from actors and generate responses when all actors have sent their requests"""
         self.requests[actor_rank] = prompt_token_ids
         self.actor_counter += 1
         if self.actor_counter == self.num_actors:
@@ -263,29 +281,76 @@ class LLMRayActor:
                 responses = self.llm.generate(sampling_params=sampling_params, prompt_token_ids=requests)
                 current_prompts = [""] * len(responses)
 
-                self.tool_logger.info("=" * 80)
-                self.tool_logger.info("NEW BATCH OF REQUESTS")
-                self.tool_logger.info("=" * 80)
-                self.tool_logger.info(f"Processing {len(responses)} responses")
-                self.tool_logger.info("=" * 80)
-
+                # Define patterns and executors before processing
                 tool_patterns = {
                     'PYTHON': (tools['run_python_code'], re.compile(r"<PYTHON>(.*?)</PYTHON>", re.DOTALL | re.IGNORECASE)),
                     'eval_python_code': (tools['eval_python_code'], re.compile(r"<EVAL>(.*?)</EVAL>", re.DOTALL | re.IGNORECASE)),
                 }
 
-                processed_responses = []
-                for i, response in enumerate(responses):
-                    processed_response = self.process_response_tool_chain(
-                        response, 
-                        sampling_params, 
-                        current_prompts[i], 
-                        tool_patterns, 
-                        i
-                    )
-                    processed_responses.append(processed_response)
-                
-                responses = processed_responses
+                tool_executors = {
+                    'PYTHON': execute_python_code,
+                    'eval_python_code': execute_eval_code
+                }
+
+                # Process responses in batches to allow for parallel tool execution
+                tool_call_budget = 3
+                while tool_call_budget > 0:
+                    self.tool_logger.info(f"Tool execution iteration (budget: {tool_call_budget})")
+                    
+                    # Collect all tool calls from all responses
+                    tool_calls = []  # List of (response_idx, tool_name, code, match)
+                    for i, response in enumerate(responses):
+                        for tool_name, (_, pattern) in tool_patterns.items():
+                            matches = list(pattern.finditer(response.outputs[0].text))
+                            if matches:
+                                last_match = matches[-1]
+                                code = last_match.group(1).strip()
+                                tool_calls.append((i, tool_name, code, last_match))
+                    
+                    if not tool_calls:
+                        self.tool_logger.info("No more tool calls found")
+                        break
+                    
+                    # Launch all tool executions in parallel
+                    futures = []
+                    response_indices = []
+                    execution_id = 0  # Add counter for unique execution IDs
+                    for i, tool_name, code, _ in tool_calls:
+                        self.tool_logger.info(f"Queuing {tool_name} execution {execution_id} for response {i}")
+                        executor = tool_executors[tool_name]
+                        futures.append(executor.remote(code, execution_id))
+                        response_indices.append(i)
+                        execution_id += 1
+                    
+                    # Wait for all results at once
+                    results = {}  # Map of response_idx -> result
+                    self.tool_logger.info(f"Executing {len(futures)} tool calls in parallel...")
+                    all_results = ray.get(futures)
+                    self.tool_logger.info(f"Finished executing {len(futures)} tool calls")
+                    for i, result in zip(response_indices, all_results):
+                        results[i] = result
+                    
+                    # Update all responses with their results
+                    new_responses = []
+                    for i, response in enumerate(responses):
+                        if i in results:
+                            tool_idx = next(idx for idx, (resp_idx, _, _, _) in enumerate(tool_calls) if resp_idx == i)
+                            _, _, _, match = tool_calls[tool_idx]
+                            
+                            prompt = (
+                                current_prompts[i] 
+                                + response.outputs[0].text[:match.end()] 
+                                + f"\n<OUTPUT>{results[i]}</OUTPUT>\n"
+                            )
+                            
+                            new_response = self.llm.generate(sampling_params=sampling_params, prompts=[prompt])[0]
+                            current_prompts[i] = prompt
+                            new_responses.append(new_response)
+                        else:
+                            new_responses.append(response)
+                    
+                    responses = new_responses
+                    tool_call_budget -= 1
             else:
                 responses = []
 
@@ -299,83 +364,8 @@ class LLMRayActor:
             self.requests = {}
 
     def get_responses(self, actor_rank):
-        """
-        Return the responses for the actor with the given rank
-        """
+        """Return the responses for the actor with the given rank"""
         return self.responses.pop(actor_rank)
-
-    def process_response_tool_chain(self, response, sampling_params, initial_prompt, tool_patterns, response_index):
-        self.tool_logger.info(f"\nPROCESSING RESPONSE {response_index}")
-        self.tool_logger.info("-" * 40)
-        self.tool_logger.info("Initial generation:")
-        self.tool_logger.info(f"{response.outputs[0].text}\n")
-
-        original_response = response
-        tool_call_count = 0
-        tool_call_budget = 3
-        current_prompt = initial_prompt
-
-        # Map tool names to their remote execution functions
-        tool_executors = {
-            'PYTHON': execute_python_code,
-            'eval_python_code': execute_eval_code
-        }
-
-        while tool_call_budget > 0:
-            # Find all tool calls in the current response
-            tool_calls = []
-            for tool_name, (_, pattern) in tool_patterns.items():
-                matches = list(pattern.finditer(response.outputs[0].text))
-                if matches:
-                    last_match = matches[-1]
-                    tool_calls.append((tool_name, last_match))
-
-            if not tool_calls:
-                break
-
-            # Use the last tool call found
-            tool_name, last_match = max(tool_calls, key=lambda x: x[1].start())
-            
-            tool_call_count += 1
-            self.tool_logger.info(f"TOOL EXECUTION {tool_call_count} - {tool_name}")
-            self.tool_logger.info("-" * 30)
-            
-            code = last_match.group(1).strip()
-            self.tool_logger.info(f"Extracted code:\n{code}")
-            tool_call_budget -= 1
-
-            # Execute the tool in a separate process using the appropriate executor
-            self.tool_logger.info(f"Executing {tool_name}...")
-            executor = tool_executors[tool_name]
-            result = ray.get(executor.remote(code))
-            self.tool_logger.info(f"Execution result:\n{result}\n")
-
-            # Build new prompt and continue as before...
-            prompt = (
-                current_prompt 
-                + response.outputs[0].text[:last_match.end()] 
-                + f"\n<OUTPUT>{result}</OUTPUT>\n"
-            )
-
-            self.tool_logger.info("Regenerating with new prompt:")
-            self.tool_logger.info("-" * 30)
-            self.tool_logger.info(f"{prompt}")
-            self.tool_logger.info("-" * 30)
-
-            response = self.llm.generate(sampling_params=sampling_params, prompts=[prompt])[0]
-            current_prompt = prompt
-            self.tool_logger.info(f"New generation:\n{response.outputs[0].text}\n")
-
-        self.tool_logger.info(f"\nFINAL STATE OF RESPONSE {response_index}")
-        self.tool_logger.info("-" * 40)
-        self.tool_logger.info(f"Total tool executions: {tool_call_count}")
-        self.tool_logger.info("Original response:")
-        self.tool_logger.info(f"{original_response.outputs[0].text}\n")
-        self.tool_logger.info("Final response:")
-        self.tool_logger.info(f"{response.outputs[0].text}\n")
-        self.tool_logger.info("=" * 80)
-
-        return response
 
 
 def create_vllm_engines(
