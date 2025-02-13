@@ -18,6 +18,23 @@ logger = init_logger(__name__)
 # <tools>
 def get_safe_globals():
     """Create a safe globals dictionary with allowed modules."""
+    
+    # Import all of rdkit.Chem
+    rdkit = try_import('rdkit')
+    rdkit_chem = try_import('rdkit.Chem')
+    if rdkit_chem:
+        chem_dict = {name: getattr(rdkit_chem, name) for name in dir(rdkit_chem) if not name.startswith('_')}
+        logger.info(f"Loaded {len(chem_dict)} RDKit functions")
+    else:
+        chem_dict = {}
+
+    # Import all of cirpy
+    cirpy = try_import('cirpy')
+    if cirpy:
+        cirpy_dict = {name: getattr(cirpy, name) for name in dir(cirpy) if not name.startswith('_')}
+    else:
+        cirpy_dict = {}
+
     safe_modules = {
         'math': __import__('math'),
         'random': __import__('random'),
@@ -29,88 +46,13 @@ def get_safe_globals():
         're': __import__('re'),
         'requests': __import__('requests'),
         
-        # Core RDKit modules
-        'rdkit': try_import('rdkit'),
-        'Chem': try_import('rdkit.Chem'),
-        'AllChem': try_import('rdkit.Chem.AllChem'),
+        # Core RDKit
+        'rdkit': rdkit,
+        **chem_dict,  # Include all of rdkit.Chem
         
-        # Drawing and Visualization
-        'Draw': try_import('rdkit.Chem.Draw'),
-        'IPythonConsole': try_import('rdkit.Chem.Draw.IPythonConsole'),
-        'rdDepictor': try_import('rdkit.Chem.rdDepictor'),
-        
-        # Molecular Descriptors and Properties
-        'Descriptors': try_import('rdkit.Chem.Descriptors'),
-        'Descriptors3D': try_import('rdkit.Chem.Descriptors3D'),
-        'rdMolDescriptors': try_import('rdkit.Chem.rdMolDescriptors'),
-        'Crippen': try_import('rdkit.Chem.Crippen'),
-        'QED': try_import('rdkit.Chem.QED'),
-        'Fragments': try_import('rdkit.Chem.Fragments'),
-        'MolSurf': try_import('rdkit.Chem.MolSurf'),
-        'GraphDescriptors': try_import('rdkit.Chem.GraphDescriptors'),
-        'rdMolTransforms': try_import('rdkit.Chem.rdMolTransforms'),
-        
-        # Structure Analysis and Manipulation
-        'BRICS': try_import('rdkit.Chem.BRICS'),
-        'ChemicalFeatures': try_import('rdkit.Chem.ChemicalFeatures'),
-        'rdFMCS': try_import('rdkit.Chem.rdFMCS'),
-        'rdqueries': try_import('rdkit.Chem.rdqueries'),
-        'rdMolOps': try_import('rdkit.Chem.rdmolops'),
-        'AllChem': try_import('rdkit.Chem.AllChem'),
-        'rdMMPA': try_import('rdkit.Chem.rdMMPA'),
-        
-        # 3D Structure and Conformers
-        'rdDistGeom': try_import('rdkit.Chem.rdDistGeom'),
-        'rdForceFieldHelpers': try_import('rdkit.Chem.rdForceFieldHelpers'),
-        'rdMolAlign': try_import('rdkit.Chem.rdMolAlign'),
-        'rdMolTransforms': try_import('rdkit.Chem.rdMolTransforms'),
-        
-        # Chemical Reactions
-        'rdChemReactions': try_import('rdkit.Chem.rdChemReactions'),
-        'rdDeprotect': try_import('rdkit.Chem.rdDeprotect'),
-        'EnumerateHeterocycles': try_import('rdkit.Chem.EnumerateHeterocycles'),
-        'EnumerateStereoisomers': try_import('rdkit.Chem.EnumerateStereoisomers'),
-        
-        # Fingerprints and Similarity
-        'DataStructs': try_import('rdkit.DataStructs'),
-        'rdFingerprintGenerator': try_import('rdkit.Chem.rdFingerprintGenerator'),
-        'MACCSkeys': try_import('rdkit.Chem.MACCSkeys'),
-        'AtomPairs': try_import('rdkit.Chem.AtomPairs'),
-        'rdMHFPFingerprint': try_import('rdkit.Chem.rdMHFPFingerprint'),
-        
-        # Structure Standardization and Cleanup
-        'MolStandardize': try_import('rdkit.Chem.MolStandardize'),
-        'SaltRemover': try_import('rdkit.Chem.SaltRemover'),
-        'rdAbbreviations': try_import('rdkit.Chem.rdAbbreviations'),
-        
-        # File I/O and Format Handling
-        'PandasTools': try_import('rdkit.Chem.PandasTools'),
-        'rdmolfiles': try_import('rdkit.Chem.rdmolfiles'),
-        
-        # Scaffolds and Structure Analysis
-        'Scaffolds': try_import('rdkit.Chem.Scaffolds'),
-        'MurckoScaffold': try_import('rdkit.Chem.Scaffolds.MurckoScaffold'),
-        
-        # Advanced Features
-        'rdEHTTools': try_import('rdkit.Chem.rdEHTTools'),
-        'rdDetermineBonds': try_import('rdkit.Chem.rdDetermineBonds'),
-        'rdRGroupDecomposition': try_import('rdkit.Chem.rdRGroupDecomposition'),
-        'rdSubstructLibrary': try_import('rdkit.Chem.rdSubstructLibrary'),
-        'rdTautomerQuery': try_import('rdkit.Chem.rdTautomerQuery'),
-        
-        # Coordinate Generation and 2D/3D
-        'rdCoordGen': try_import('rdkit.Chem.rdCoordGen'),
-        'rdDetermineBonds': try_import('rdkit.Chem.rdDetermineBonds'),
-        'rdShapeHelpers': try_import('rdkit.Chem.rdShapeHelpers'),
-        
-        # Stereochemistry
-        'rdCIPLabeler': try_import('rdkit.Chem.rdCIPLabeler'),
-        
-        # Registration and Hashing
-        'RegistrationHash': try_import('rdkit.Chem.RegistrationHash'),
-        
-        # Periodic Table and Basic Chemistry
-        'rdchem': try_import('rdkit.Chem.rdchem'),
+        # CIRpy
+        'cirpy': cirpy,
+        **cirpy_dict,  # Include all cirpy functions
         
         # File format conversion
         'openbabel': try_import('openbabel'),
@@ -128,14 +70,14 @@ def get_safe_globals():
         **{k: v for k, v in safe_modules.items() if v is not None}
     }
 
-def try_import(module_name, fromlist=None):
-    """Safely try to import a module, return None if not available."""
+def try_import(module_name):
+    """Try to import a module, return None if it fails."""
     try:
-        if fromlist:
-            return __import__(module_name, fromlist=fromlist)
-        return __import__(module_name)
-    except ImportError:
-        logger.warning(f"{module_name} not available - some chemistry operations will be limited")
+        module = __import__(module_name)
+        logger.debug(f"Successfully imported {module_name}")
+        return module
+    except ImportError as e:
+        logger.warning(f"Failed to import {module_name}: {str(e)}")
         return None
 
 class TimeoutError(Exception):
@@ -230,6 +172,18 @@ def get_all_env_variables():
 
 
 @ray.remote
+def execute_python_code(code: str):
+    """Execute Python code in a separate process"""
+    from openrlhf.trainer.ray.vllm_engine import run_python_code
+    return run_python_code(code)
+
+@ray.remote
+def execute_eval_code(code: str):
+    """Execute eval code in a separate process"""
+    from openrlhf.trainer.ray.vllm_engine import run_python_code  # Same function, different name
+    return run_python_code(code)
+
+@ray.remote
 class LLMRayActor:
 
     def __init__(self, *args, bundle_indices: list = None, **kwargs):
@@ -306,97 +260,39 @@ class LLMRayActor:
                 requests.extend(request)
 
             if len(requests) > 0:
-                # For now we assume that all requests have the same sampling params
                 responses = self.llm.generate(sampling_params=sampling_params, prompt_token_ids=requests)
-                
-                # Instead of trying to decode the tokens, we'll use empty strings as initial prompts
-                # since we're working with token IDs directly
                 current_prompts = [""] * len(responses)
-                
-                self.tool_logger.info("="*80)
-                self.tool_logger.info("NEW BATCH OF REQUESTS")
-                self.tool_logger.info("="*80)
-                self.tool_logger.info(f"Processing {len(responses)} responses")
-                self.tool_logger.info("="*80)
 
-                # Create patterns for all tool types
+                self.tool_logger.info("=" * 80)
+                self.tool_logger.info("NEW BATCH OF REQUESTS")
+                self.tool_logger.info("=" * 80)
+                self.tool_logger.info(f"Processing {len(responses)} responses")
+                self.tool_logger.info("=" * 80)
+
                 tool_patterns = {
                     'PYTHON': (tools['run_python_code'], re.compile(r"<PYTHON>(.*?)</PYTHON>", re.DOTALL | re.IGNORECASE)),
                     'eval_python_code': (tools['eval_python_code'], re.compile(r"<EVAL>(.*?)</EVAL>", re.DOTALL | re.IGNORECASE)),
                 }
 
+                processed_responses = []
                 for i, response in enumerate(responses):
-                    self.tool_logger.info(f"\nPROCESSING RESPONSE {i}")
-                    self.tool_logger.info("-"*40)
-                    self.tool_logger.info("Initial generation:")
-                    self.tool_logger.info(f"{response.outputs[0].text}\n")
-                    
-                    original_response = response
-                    tool_call_count = 0
-                    tool_call_budget = 3
-                    current_prompt = current_prompts[i]
-                    
-                    while tool_call_budget > 0:
-                        # Find the last tool call of any type
-                        last_match = None
-                        last_pos = -1
-                        matched_tool = None
-                        matched_func = None
-                        
-                        for tool_name, (func, pattern) in tool_patterns.items():
-                            # Find all matches and take the last one
-                            matches = list(pattern.finditer(response.outputs[0].text))
-                            if matches and matches[-1].start() > last_pos:
-                                last_match = matches[-1]
-                                last_pos = last_match.start()
-                                matched_tool = tool_name
-                                matched_func = func
-                        
-                        if last_match:
-                            tool_call_count += 1
-                            self.tool_logger.info(f"TOOL EXECUTION {tool_call_count} - {matched_tool}")
-                            self.tool_logger.info("-"*30)
-                            
-                            code = last_match.group(1).strip()
-                            self.tool_logger.info(f"Extracted code:\n{code}")
-                            tool_call_budget -= 1
-                            
-                            self.tool_logger.info(f"Executing {matched_tool}...")
-                            result = matched_func(code)
-                            self.tool_logger.info(f"Execution result:\n{result}\n")
-                            
-                            # Build new prompt as a text string
-                            prompt = (current_prompt + 
-                                    response.outputs[0].text[:last_match.end()] + 
-                                    f"\n<OUTPUT>{result}</OUTPUT>\n")
-                            
-                            self.tool_logger.info("Regenerating with new prompt:")
-                            self.tool_logger.info("-"*30)
-                            self.tool_logger.info(f"{prompt}")
-                            self.tool_logger.info("-"*30)
-                            
-                            # Generate with text prompt instead of token IDs
-                            response = self.llm.generate(sampling_params=sampling_params, prompts=[prompt])[0]
-                            current_prompt = prompt  # Update current prompt for next iteration
-                            self.tool_logger.info(f"New generation:\n{response.outputs[0].text}\n")
-                        else:
-                            break
-                    
-                    self.tool_logger.info(f"\nFINAL STATE OF RESPONSE {i}")
-                    self.tool_logger.info("-"*40)
-                    self.tool_logger.info(f"Total tool executions: {tool_call_count}")
-                    self.tool_logger.info("Original response:")
-                    self.tool_logger.info(f"{original_response.outputs[0].text}\n")
-                    self.tool_logger.info("Final response:")
-                    self.tool_logger.info(f"{response.outputs[0].text}\n")
-                    self.tool_logger.info("="*80)
+                    processed_response = self.process_response_tool_chain(
+                        response, 
+                        sampling_params, 
+                        current_prompts[i], 
+                        tool_patterns, 
+                        i
+                    )
+                    processed_responses.append(processed_response)
+                
+                responses = processed_responses
             else:
                 responses = []
 
             offset = 0
             self.responses = {}
             for actor_rank, num in num_requests:
-                self.responses[actor_rank] = responses[offset : offset + num]
+                self.responses[actor_rank] = responses[offset: offset + num]
                 offset += num
 
             self.actor_counter = 0
@@ -407,6 +303,79 @@ class LLMRayActor:
         Return the responses for the actor with the given rank
         """
         return self.responses.pop(actor_rank)
+
+    def process_response_tool_chain(self, response, sampling_params, initial_prompt, tool_patterns, response_index):
+        self.tool_logger.info(f"\nPROCESSING RESPONSE {response_index}")
+        self.tool_logger.info("-" * 40)
+        self.tool_logger.info("Initial generation:")
+        self.tool_logger.info(f"{response.outputs[0].text}\n")
+
+        original_response = response
+        tool_call_count = 0
+        tool_call_budget = 3
+        current_prompt = initial_prompt
+
+        # Map tool names to their remote execution functions
+        tool_executors = {
+            'PYTHON': execute_python_code,
+            'eval_python_code': execute_eval_code
+        }
+
+        while tool_call_budget > 0:
+            # Find all tool calls in the current response
+            tool_calls = []
+            for tool_name, (_, pattern) in tool_patterns.items():
+                matches = list(pattern.finditer(response.outputs[0].text))
+                if matches:
+                    last_match = matches[-1]
+                    tool_calls.append((tool_name, last_match))
+
+            if not tool_calls:
+                break
+
+            # Use the last tool call found
+            tool_name, last_match = max(tool_calls, key=lambda x: x[1].start())
+            
+            tool_call_count += 1
+            self.tool_logger.info(f"TOOL EXECUTION {tool_call_count} - {tool_name}")
+            self.tool_logger.info("-" * 30)
+            
+            code = last_match.group(1).strip()
+            self.tool_logger.info(f"Extracted code:\n{code}")
+            tool_call_budget -= 1
+
+            # Execute the tool in a separate process using the appropriate executor
+            self.tool_logger.info(f"Executing {tool_name}...")
+            executor = tool_executors[tool_name]
+            result = ray.get(executor.remote(code))
+            self.tool_logger.info(f"Execution result:\n{result}\n")
+
+            # Build new prompt and continue as before...
+            prompt = (
+                current_prompt 
+                + response.outputs[0].text[:last_match.end()] 
+                + f"\n<OUTPUT>{result}</OUTPUT>\n"
+            )
+
+            self.tool_logger.info("Regenerating with new prompt:")
+            self.tool_logger.info("-" * 30)
+            self.tool_logger.info(f"{prompt}")
+            self.tool_logger.info("-" * 30)
+
+            response = self.llm.generate(sampling_params=sampling_params, prompts=[prompt])[0]
+            current_prompt = prompt
+            self.tool_logger.info(f"New generation:\n{response.outputs[0].text}\n")
+
+        self.tool_logger.info(f"\nFINAL STATE OF RESPONSE {response_index}")
+        self.tool_logger.info("-" * 40)
+        self.tool_logger.info(f"Total tool executions: {tool_call_count}")
+        self.tool_logger.info("Original response:")
+        self.tool_logger.info(f"{original_response.outputs[0].text}\n")
+        self.tool_logger.info("Final response:")
+        self.tool_logger.info(f"{response.outputs[0].text}\n")
+        self.tool_logger.info("=" * 80)
+
+        return response
 
 
 def create_vllm_engines(
@@ -441,22 +410,25 @@ def create_vllm_engines(
                 scheduling_strategy = PlacementGroupSchedulingStrategy(
                     placement_group=shared_pg,
                     placement_group_capture_child_tasks=True,
-                    placement_group_bundle_index=i * tensor_parallel_size
+                    placement_group_bundle_index=i * tensor_parallel_size,
                 )
                 bundle_indices = np.arange(i * tensor_parallel_size, (i + 1) * tensor_parallel_size).tolist()
             else:
                 num_gpus = 0.2
                 scheduling_strategy = PlacementGroupSchedulingStrategy(
-                    placement_group=shared_pg, placement_group_capture_child_tasks=True, placement_group_bundle_index=i
+                    placement_group=shared_pg,
+                    placement_group_capture_child_tasks=True,
+                    placement_group_bundle_index=i,
                 )
-        # Distributed RLHF
         elif tensor_parallel_size > 1:
             bundles = [{"GPU": 1, "CPU": 1}] * tensor_parallel_size
             pg = placement_group(bundles)
             ray.get(pg.ready())
 
             scheduling_strategy = PlacementGroupSchedulingStrategy(
-                placement_group=pg, placement_group_capture_child_tasks=True, placement_group_bundle_index=0
+                placement_group=pg,
+                placement_group_capture_child_tasks=True,
+                placement_group_bundle_index=0,
             )
 
         if num_engines >= num_total_actors:
@@ -468,6 +440,7 @@ def create_vllm_engines(
             LLMRayActor.options(
                 num_cpus=0,
                 num_gpus=num_gpus,
+                max_concurrency=32,  # Allow concurrent processing of tool calls
                 scheduling_strategy=scheduling_strategy,
             ).remote(
                 model=pretrain,
