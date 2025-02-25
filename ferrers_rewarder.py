@@ -12,7 +12,7 @@ def extract_solution(solution_str: str) -> Optional[nx.Graph]:
     elif "<|im_start|>assistant" in solution_str:
         solution_str = solution_str.split("<|im_start|>assistant", 1)[1]
     
-    answer_pattern = r'<answer>.*?</answer>'
+    answer_pattern = r'<answer>(.*?)</answer>'
     matches = re.findall(answer_pattern, solution_str, re.DOTALL)
     if matches:
         try:
@@ -75,5 +75,22 @@ def reward_func(queries, prompts):
         response = query[len(prompt):]
         G = extract_solution(response)
         rewards.append(reward(G))
-    return torch.tensor(rewards, dtype=torch.float32)
+    rewards = torch.tensor(rewards, dtype=torch.float32)
+
+      
+    # Show detailed breakdown for first 3 examples
+    num_examples = min(3, len(queries))
+    for i in range(num_examples):
+        response = queries[i][len(prompts[i]):]
+        print(f"\nExample {i+1}:")
+        print(f"Prompt: {prompts[i]}")
+        print(f"Response: {response}")
+        print(f"Reward: {rewards[i]:.3f}")
+    
+    # Show summary statistics
+    print(f"\nReward statistics:")
+    print(f"Min reward: {rewards.min():.3f}")
+    print(f"Max reward: {rewards.max():.3f}")
+    print(f"Mean reward: {rewards.mean():.3f}")
+    return rewards
     
