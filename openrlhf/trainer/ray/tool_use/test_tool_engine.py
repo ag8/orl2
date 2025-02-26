@@ -24,7 +24,7 @@ def parse_args():
     parser.add_argument("--tensor-parallel-size", type=int, default=1, help="Tensor parallel size")
     parser.add_argument("--max-model-len", type=int, default=4096, help="Maximum model length")
     parser.add_argument("--tool-use-enabled", action="store_true", help="Enable tool use")
-    parser.add_argument("--prompts", type=str, nargs="+", default=["Write a Python function to calculate the factorial of a number. Make sure to output the code in <PYTHON></PYTHON> tags."], 
+    parser.add_argument("--prompts", type=str, nargs="+", default=["Write a Python function to calculate the factorial of a number. Make sure to output the code in <PYTHON></PYTHON> tags.", "Write a Python function to fuckin destroy the primen umber conjecture LOL!!!!!. Make sure to output the code in <PYTHON></PYTHON> tags."], 
                         help="Prompts to test with")
     return parser.parse_args()
 
@@ -56,7 +56,7 @@ def main():
         num_engines=1,
         tensor_parallel_size=args.tensor_parallel_size,
         pretrain=args.model,
-        seed=42,
+        seed=42069,
         enable_prefix_caching=False,
         enforce_eager=True,
         max_model_len=args.max_model_len,
