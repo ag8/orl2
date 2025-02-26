@@ -248,6 +248,21 @@ def create_tool_vllm_engines(
     """
     Create VLLM engines with tool use capabilities.
     This is initially a copy of create_vllm_engines with minimal changes.
+    
+    Args:
+        num_engines: Number of VLLM engines to create
+        tensor_parallel_size: Tensor parallel size for each engine
+        pretrain: Path to the pretrained model
+        seed: Random seed
+        enable_prefix_caching: Whether to enable prefix caching
+        enforce_eager: Whether to enforce eager execution
+        max_model_len: Maximum model length
+        num_total_actors: Total number of actors
+        shared_pg: Shared placement group
+        gpu_memory_utilization: GPU memory utilization
+        vllm_enable_sleep: Whether to enable sleep mode
+        tool_use_enabled: Whether to enable tool use
+        num_tool_executors: Number of parallel tool executors
     """
     import vllm
 

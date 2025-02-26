@@ -13,6 +13,7 @@ from openrlhf.trainer.ray import (
     ReferenceModelRayActor,
     RewardModelRayActor,
     create_vllm_engines,
+    create_tool_vllm_engines,
 )
 from openrlhf.utils import get_strategy
 
@@ -79,19 +80,38 @@ def train(args):
                 f"and {args.vllm_num_engines * args.vllm_tensor_parallel_size}"
             )
 
-        vllm_engines = create_vllm_engines(
-            args.vllm_num_engines,
-            args.vllm_tensor_parallel_size,
-            args.pretrain,
-            args.seed,
-            args.enable_prefix_caching,
-            args.enforce_eager,
-            max_len,
-            args.actor_num_nodes * args.actor_num_gpus_per_node,
-            pg if args.colocate_all_models else None,
-            args.vllm_gpu_memory_utilization,
-            args.vllm_enable_sleep,
-        )
+        # Create VLLM engines
+        if args.enable_tool_use:
+            print(f"Creating tool-enabled VLLM engines with {args.num_tool_executors} tool executors")
+            vllm_engines = create_tool_vllm_engines(
+                num_engines=args.vllm_num_engines,
+                tensor_parallel_size=args.vllm_tensor_parallel_size,
+                pretrain=args.pretrain,
+                seed=args.seed,
+                enable_prefix_caching=args.enable_prefix_caching,
+                enforce_eager=args.enforce_eager,
+                max_model_len=max_len,
+                num_total_actors=args.actor_num_nodes * args.actor_num_gpus_per_node,
+                shared_pg=pg if args.colocate_all_models else None,
+                gpu_memory_utilization=args.vllm_gpu_memory_utilization,
+                vllm_enable_sleep=args.vllm_enable_sleep,
+                tool_use_enabled=True,
+                num_tool_executors=args.num_tool_executors,
+            )
+        else:
+            vllm_engines = create_vllm_engines(
+                num_engines=args.vllm_num_engines,
+                tensor_parallel_size=args.vllm_tensor_parallel_size,
+                pretrain=args.pretrain,
+                seed=args.seed,
+                enable_prefix_caching=args.enable_prefix_caching,
+                enforce_eager=args.enforce_eager,
+                max_model_len=max_len,
+                num_total_actors=args.actor_num_nodes * args.actor_num_gpus_per_node,
+                shared_pg=pg if args.colocate_all_models else None,
+                gpu_memory_utilization=args.vllm_gpu_memory_utilization,
+                vllm_enable_sleep=args.vllm_enable_sleep,
+            )
 
     actor_model = PPORayActorGroup(
         args.actor_num_nodes,
@@ -243,6 +263,20 @@ if __name__ == "__main__":
         type=float,
         default=0.9,
         help="vLLM gpu_memory_utilization",
+    )
+
+    # Tool use parameters
+    parser.add_argument(
+        "--enable_tool_use",
+        action="store_true",
+        default=False,
+        help="Enable tool use in the VLLM engine",
+    )
+    parser.add_argument(
+        "--num_tool_executors",
+        type=int,
+        default=32,
+        help="Number of parallel tool executors when tool use is enabled",
     )
 
     # Checkpoints
