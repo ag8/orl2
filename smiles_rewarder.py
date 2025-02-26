@@ -141,6 +141,9 @@ def reward_func(queries, prompts, labels=None):
     print("\nPrompts:")
     for i in range(3):
         print(f"Prompt {i+1}: {prompts[i]}")
+    print("\nLabels:")
+    for i in range(3):
+        print(f"Label {i+1}: {labels[i]}")
     
     print("===END DEBUGGING INFO===")
 

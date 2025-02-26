@@ -172,12 +172,31 @@ class ToolLLMRayActor:
                         logger.info(f"Waiting for {len(processing_tasks)} tool execution tasks to complete")
                         processed_texts = ray.get(processing_tasks)
                         
-                        # Update responses with processed texts
+                        # Update responses with processed texts and continue generation
                         for idx, processed_text in zip(response_indices, processed_texts):
+                            # First update the response text with the processed text
                             responses[idx].outputs[0].text = processed_text
+                            
+                            # Now continue generation with the processed text as the new prompt
+                            # We need to tokenize the processed text and continue generation
+                            try:
+                                continued_prompt_tokens = self.llm.llm_engine.tokenizer.encode(processed_text)
+                                
+                                # Generate continuation
+                                logger.info(f"Continuing generation for response {idx} after tool execution")
+                                continued_response = self.llm.generate(
+                                    sampling_params=sampling_params,
+                                    prompt_token_ids=[continued_prompt_tokens]
+                                )[0]
+                                
+                                # Update the response with the continued generation
+                                responses[idx].outputs[0].text = continued_response.outputs[0].text
+                            except Exception as e:
+                                logger.error(f"Error continuing generation after tool execution: {str(e)}")
+                                # Keep the processed text with tool outputs if continuation fails
                         
                         tool_execution_time = time.time() - generation_time
-                        logger.info(f"Tool execution completed in {tool_execution_time:.4f} seconds")
+                        logger.info(f"Tool execution and continued generation completed in {tool_execution_time:.4f} seconds")
             else:
                 responses = []
 
