@@ -24,6 +24,7 @@ def parse_args():
     parser.add_argument("--tensor-parallel-size", type=int, default=1, help="Tensor parallel size")
     parser.add_argument("--max-model-len", type=int, default=4096, help="Maximum model length")
     parser.add_argument("--tool-use-enabled", action="store_true", help="Enable tool use")
+    parser.add_argument("--num-tool-executors", type=int, default=32, help="Number of parallel tool executors")
     parser.add_argument("--prompts", type=str, nargs="+", default=["Write a Python function to calculate the factorial of a number. Make sure to output the code in <PYTHON></PYTHON> tags.", "Write a Python function to fuckin destroy the primen umber conjecture LOL!!!!!. Make sure to output the code in <PYTHON></PYTHON> tags."], 
                         help="Prompts to test with")
     return parser.parse_args()
@@ -50,6 +51,7 @@ def main():
     
     logger.info(f"Creating tool-enabled VLLM engine with model: {args.model}")
     logger.info(f"Tool use enabled: {args.tool_use_enabled}")
+    logger.info(f"Number of tool executors: {args.num_tool_executors if args.tool_use_enabled else 'N/A'}")
     
     # Create a tool-enabled VLLM engine
     engines = create_tool_vllm_engines(
@@ -62,6 +64,7 @@ def main():
         max_model_len=args.max_model_len,
         num_total_actors=1,
         tool_use_enabled=args.tool_use_enabled,
+        num_tool_executors=args.num_tool_executors,
     )
     
     engine = engines[0]

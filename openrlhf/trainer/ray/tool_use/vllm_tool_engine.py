@@ -7,6 +7,8 @@ to support executing Python code during generation.
 
 import os
 import time
+import re
+from typing import List, Dict, Any
 
 import numpy as np
 import ray
@@ -18,6 +20,59 @@ from openrlhf.utils.logging_utils import init_logger
 from openrlhf.trainer.ray.tool_use.tool_executor import ToolExecutor
 
 logger = init_logger(__name__)
+
+
+@ray.remote
+class ToolExecutorActor:
+    """Ray actor for executing Python code in parallel."""
+    
+    def __init__(self, max_output_length: int = 1000):
+        self.max_output_length = max_output_length
+    
+    def execute_code(self, code: str) -> str:
+        """Execute Python code and return the output."""
+        import io
+        import sys
+        import traceback
+        from contextlib import redirect_stdout, redirect_stderr
+        
+        # Capture stdout and stderr
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        
+        try:
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                # Execute the code in the global namespace
+                exec(code, globals())
+            
+            # Get the output
+            output = stdout.getvalue()
+            
+            # If there's no stdout but there is stderr, use stderr
+            if not output and stderr.getvalue():
+                output = stderr.getvalue()
+                
+        except Exception as e:
+            # Capture the exception
+            output = f"Error: {str(e)}\n{traceback.format_exc()}"
+        
+        # Truncate if too long
+        if len(output) > self.max_output_length:
+            output = output[:self.max_output_length] + f"\n... (output truncated, exceeded {self.max_output_length} characters)"
+        
+        return output
+    
+    def process_block(self, text: str, start_idx: int, end_idx: int, code: str) -> str:
+        """Process a single code block and return the modified text."""
+        # Execute the code
+        output = self.execute_code(code)
+        
+        # Insert the output after the code block
+        return (
+            text[:end_idx] + 
+            "\n<PYTHON-OUTPUT>\n" + output + "\n</PYTHON-OUTPUT>" + 
+            text[end_idx:]
+        )
 
 
 @ray.remote
@@ -46,10 +101,16 @@ class ToolLLMRayActor:
         self.requests = {}
         self.responses = {}
 
-        # Initialize the tool executor
-        tool_use_enabled = kwargs.pop("tool_use_enabled", False)
-        self.tool_executor = ToolExecutor() if tool_use_enabled else None
-        self.tool_use_enabled = tool_use_enabled
+        # Initialize tool use capabilities
+        self.tool_use_enabled = kwargs.pop("tool_use_enabled", False)
+        self.num_tool_executors = kwargs.pop("num_tool_executors", 32)  # Default to 32 parallel executors
+        
+        # Create tool executor actors if tool use is enabled
+        self.tool_executors = []
+        if self.tool_use_enabled:
+            logger.info(f"Creating {self.num_tool_executors} tool executor actors")
+            for _ in range(self.num_tool_executors):
+                self.tool_executors.append(ToolExecutorActor.remote(max_output_length=1000))
 
         self.llm = LLM(*args, **kwargs)
 
@@ -73,6 +134,20 @@ class ToolLLMRayActor:
 
     def wake_up(self):
         self.llm.wake_up()
+        
+    def extract_python_blocks(self, text: str) -> List[Dict[str, Any]]:
+        """Extract Python code blocks from text."""
+        pattern = r"<PYTHON>(.*?)</PYTHON>"
+        blocks = []
+        
+        for match in re.finditer(pattern, text, re.DOTALL):
+            blocks.append({
+                "start": match.start(),
+                "end": match.end(),
+                "code": match.group(1).strip()
+            })
+        
+        return blocks
 
     def add_requests(self, actor_rank, *, sampling_params, prompt_token_ids):
         """
@@ -92,41 +167,50 @@ class ToolLLMRayActor:
                 # For now we assume that all requests have the same sampling params
                 responses = self.llm.generate(sampling_params=sampling_params, prompt_token_ids=requests)
                 
-                # Process responses with tool executor if enabled
-                if self.tool_use_enabled and self.tool_executor:
-                    # Process each response individually
-                    for i in range(len(responses)):
-                        output_text = responses[i].outputs[0].text
+                # Process responses with tool executors if enabled
+                if self.tool_use_enabled and self.tool_executors:
+                    generation_time = time.time()
+                    logger.info(f"Processing {len(responses)} responses with tool executors")
+                    
+                    # Process each response in parallel
+                    processing_tasks = []
+                    response_indices = []
+                    
+                    for i, response in enumerate(responses):
+                        output_text = response.outputs[0].text
                         
-                        # Extract only the first Python code block
-                        python_blocks = self.tool_executor.extract_python_blocks(output_text)
+                        # Extract Python code blocks
+                        python_blocks = self.extract_python_blocks(output_text)
                         if python_blocks:
-                            # Only process the first block
+                            # Only process the first block for now
                             first_block = python_blocks[0]
-                            start_idx = first_block["start"]
-                            end_idx = first_block["end"]
-                            code = first_block["code"]
                             
-                            logger.info(f"Executing Python code block: {len(code)} characters")
+                            # Assign to a tool executor in a round-robin fashion
+                            executor_idx = i % len(self.tool_executors)
+                            executor = self.tool_executors[executor_idx]
                             
-                            # Execute the code
-                            start_time = time.time()
-                            output = self.tool_executor.execute_code(code)
-                            execution_time = time.time() - start_time
-                            
-                            logger.info(f"Code execution completed in {execution_time:.4f} seconds")
-                            
-                            # Insert the output after the code block
-                            processed_text = (
-                                output_text[:end_idx] + 
-                                "\n<PYTHON-OUTPUT>\n" + output + "\n</PYTHON-OUTPUT>" + 
-                                output_text[end_idx:]
+                            # Start processing asynchronously
+                            processing_tasks.append(
+                                executor.process_block.remote(
+                                    output_text, 
+                                    first_block["start"], 
+                                    first_block["end"], 
+                                    first_block["code"]
+                                )
                             )
-                            
-                            # Update the response with the processed text
-                            responses[i].outputs[0].text = processed_text
-                        else:
-                            logger.info("No Python code blocks found in the response")
+                            response_indices.append(i)
+                    
+                    # Wait for all processing to complete
+                    if processing_tasks:
+                        logger.info(f"Waiting for {len(processing_tasks)} tool execution tasks to complete")
+                        processed_texts = ray.get(processing_tasks)
+                        
+                        # Update responses with processed texts
+                        for idx, processed_text in zip(response_indices, processed_texts):
+                            responses[idx].outputs[0].text = processed_text
+                        
+                        tool_execution_time = time.time() - generation_time
+                        logger.info(f"Tool execution completed in {tool_execution_time:.4f} seconds")
             else:
                 responses = []
 
@@ -159,6 +243,7 @@ def create_tool_vllm_engines(
     gpu_memory_utilization=0.8,
     vllm_enable_sleep=False,
     tool_use_enabled=False,
+    num_tool_executors=32,
 ):
     """
     Create VLLM engines with tool use capabilities.
@@ -227,6 +312,7 @@ def create_tool_vllm_engines(
                 bundle_indices=bundle_indices if shared_pg else None,
                 enable_sleep_mode=vllm_enable_sleep,
                 tool_use_enabled=tool_use_enabled,
+                num_tool_executors=num_tool_executors,
             )
         )
 
