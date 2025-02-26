@@ -72,6 +72,8 @@ class ToolExecutor:
         Returns:
             The captured output (stdout + stderr).
         """
+        print(f"TOOL_DEBUG: Executing Python code: {code[:100]}..." if len(code) > 100 else f"TOOL_DEBUG: Executing Python code: {code}")
+        
         # Capture stdout and stderr
         stdout = io.StringIO()
         stderr = io.StringIO()
@@ -96,6 +98,8 @@ class ToolExecutor:
         if len(output) > self.max_output_length:
             output = output[:self.max_output_length] + f"\n... (output truncated, exceeded {self.max_output_length} characters)"
         
+        print(f"TOOL_DEBUG: Code execution output: {output[:100]}..." if len(output) > 100 else f"TOOL_DEBUG: Code execution output: {output}")
+        
         return output
     
     def process_text(self, text: str) -> str:
@@ -113,7 +117,10 @@ class ToolExecutor:
         
         # If no blocks, return the original text
         if not blocks:
+            print(f"TOOL_DEBUG: No Python blocks found in text: {text[:100]}...")
             return text
+        
+        print(f"TOOL_DEBUG: Found {len(blocks)} Python blocks in text")
         
         # Process blocks in reverse order to avoid messing up indices
         blocks.reverse()
@@ -124,6 +131,8 @@ class ToolExecutor:
             end_idx = block["end"]
             code = block["code"]
             
+            print(f"TOOL_DEBUG: Processing block at positions {start_idx}-{end_idx}")
+            
             # Execute the code
             output = self.execute_code(code)
             
@@ -133,5 +142,11 @@ class ToolExecutor:
                 "\n<PYTHON-OUTPUT>\n" + output + "\n</PYTHON-OUTPUT>" + 
                 text[end_idx:]
             )
+            
+            print(f"TOOL_DEBUG: Inserted <PYTHON-OUTPUT> tag after position {end_idx}")
+        
+        # Log the processed text to help with debugging
+        print(f"TOOL_DEBUG: Processed text with {len(blocks)} Python blocks. First 100 chars: {text[:100]}...")
+        print(f"TOOL_DEBUG: Does processed text contain <PYTHON-OUTPUT> tags? {'Yes' if '<PYTHON-OUTPUT>' in text else 'No'}")
         
         return text 
