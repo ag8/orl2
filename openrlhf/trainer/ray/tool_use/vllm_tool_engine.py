@@ -54,7 +54,7 @@ class ToolExecutorActor:
         # Insert the output after the code block
         result = (
             text[:end_idx] + 
-            "\n<PYTHON-OUTPUT>\n" + output + "\n</PYTHON-OUTPUT>\n\nCool, so here\'s what this output means:"
+            "\n<PYTHON-OUTPUT>\n" + output + "\n</PYTHON-OUTPUT>"
         )
         
         print(f"TOOL_DEBUG: ToolExecutorActor block processing result contains PYTHON-OUTPUT: {'Yes' if '<PYTHON-OUTPUT>' in result else 'No'}")
@@ -160,152 +160,23 @@ class ToolLLMRayActor:
                 # For now we assume that all requests have the same sampling params
                 responses = self.llm.generate(sampling_params=sampling_params, prompt_token_ids=requests)
                 
+                # EXTREME DEBUG: Replace all response texts with a fixed string
+                for i, response in enumerate(responses):
+                    # Replace the entire text with a fixed string that would be impossible to miss
+                    response.outputs[0].text = "TOOL_ENGINE_REPLACEMENT_TEXT_POTATO_POTATO_POTATO"
+                    print(f"TOOL_DEBUG: Replaced response {i} with fixed string")
+                
                 # Process responses with tool executors if enabled
                 if self.tool_use_enabled and self.tool_executors:
                     generation_time = time.time()
                     print(f"TOOL_DEBUG: Processing {len(responses)} responses with tool executors")
                     
-                    # Process each response in parallel
-                    processing_tasks = []
-                    response_indices = []
+                    # EXTREME DEBUG: Skip all tool execution and just keep our fixed string
+                    print(f"TOOL_DEBUG: EXTREME DEBUG MODE - Skipping all tool execution and keeping fixed string")
                     
-                    for i, response in enumerate(responses):
-                        output_text = response.outputs[0].text
-                        
-                        # Check if the response contains Python code blocks
-                        if "<PYTHON>" in output_text and "</PYTHON>" in output_text:
-                            # Assign to a tool executor in a round-robin fashion
-                            executor_idx = i % len(self.tool_executors)
-                            executor = self.tool_executors[executor_idx]
-                            
-                            print(f"TOOL_DEBUG: Response {i} contains Python code blocks, assigning to executor {executor_idx}")
-                            
-                            # Process the entire text with all code blocks
-                            processing_tasks.append(
-                                executor.process_text.remote(output_text)
-                            )
-                            response_indices.append(i)
-                        else:
-                            print(f"TOOL_DEBUG: Response {i} does not contain Python code blocks")
-                    
-                    # Wait for all processing to complete
-                    if processing_tasks:
-                        print(f"TOOL_DEBUG: Waiting for {len(processing_tasks)} tool execution tasks to complete")
-                        processed_texts = ray.get(processing_tasks)
-                        
-                        # Check if processed texts contain PYTHON-OUTPUT tags
-                        for idx, processed_text in enumerate(processed_texts):
-                            print(f"TOOL_DEBUG: Processed text {idx} contains PYTHON-OUTPUT tags: {'Yes' if '<PYTHON-OUTPUT>' in processed_text else 'No'}")
-                        
-                        # Update responses with processed texts
-                        for idx, processed_text in zip(response_indices, processed_texts):
-                            responses[idx].outputs[0].text = processed_text
-                            print(f"TOOL_DEBUG: Updated response {idx} with processed text")
-                        
-                        # Batch the continued generation
-                        try:
-                            # Prepare batch of prompts for continued generation
-                            continued_prompt_tokens = []
-                            continued_indices = []
-                            processed_texts_map = {}  # Store processed texts for later use
-                            
-                            for idx, processed_text in zip(response_indices, processed_texts):
-                                try:
-                                    tokens = self.llm.llm_engine.tokenizer.encode(processed_text)
-                                    continued_prompt_tokens.append(tokens)
-                                    continued_indices.append(idx)
-                                    processed_texts_map[idx] = processed_text  # Store for later
-                                    print(f"TOOL_DEBUG: Tokenized processed text for response {idx}, token length: {len(tokens)}")
-                                except Exception as e:
-                                    print(f"TOOL_DEBUG: Error tokenizing processed text for response {idx}: {str(e)}")
-                            
-                            if continued_prompt_tokens:
-                                # Generate continuations in batch
-                                print(f"TOOL_DEBUG: Continuing generation for {len(continued_prompt_tokens)} responses after tool execution")
-                                
-                                # Log the batch size for debugging
-                                print(f"TOOL_DEBUG: Batch size for continued generation: {len(continued_prompt_tokens)}")
-                                
-                                # Generate continuations in batch
-                                continued_responses = self.llm.generate(
-                                    sampling_params=sampling_params,
-                                    prompt_token_ids=continued_prompt_tokens
-                                )
-                                
-                                # Log the number of responses received
-                                print(f"TOOL_DEBUG: Received {len(continued_responses)} continued responses")
-                                
-                                # Update the responses by preserving the processed text with PYTHON-OUTPUT tags
-                                for i, idx in enumerate(continued_indices):
-                                    processed_text = processed_texts_map[idx]
-                                    continued_text = continued_responses[i].outputs[0].text
-                                    
-                                    # Log the first 100 chars of both texts for debugging
-                                    print(f"TOOL_DEBUG: Response {idx} - Processed text first 100 chars: {processed_text[:100]}...")
-                                    print(f"TOOL_DEBUG: Response {idx} - Continued text first 100 chars: {continued_text[:100]}...")
-                                    
-                                    # IMPORTANT: Print the full processed text to see if it contains PYTHON-OUTPUT tags
-                                    print(f"TOOL_DEBUG: FULL PROCESSED TEXT FOR RESPONSE {idx}:")
-                                    print("=" * 80)
-                                    print(processed_text)
-                                    print("=" * 80)
-                                    
-                                    # Check if the processed text contains PYTHON-OUTPUT tags
-                                    if "<PYTHON-OUTPUT>" in processed_text:
-                                        print(f"TOOL_DEBUG: Response {idx} - Processed text contains PYTHON-OUTPUT tags")
-                                        # Find the last PYTHON-OUTPUT tag
-                                        last_output_end = processed_text.rfind("</PYTHON-OUTPUT>")
-                                        
-                                        if last_output_end != -1:
-                                            # Get everything up to and including the last output tag
-                                            prefix = processed_text[:last_output_end + len("</PYTHON-OUTPUT>")]
-                                            
-                                            # Find where this same content ends in the continued text
-                                            # The model might have regenerated some of the content
-                                            if prefix in continued_text:
-                                                # The continued text contains the full prefix
-                                                suffix = continued_text[len(prefix):]
-                                                final_text = prefix + suffix
-                                                print(f"TOOL_DEBUG: Response {idx} - Found exact prefix match, appending suffix")
-                                            else:
-                                                # Try to find the last output tag in the continued text
-                                                continued_last_tag = continued_text.rfind("</PYTHON-OUTPUT>")
-                                                
-                                                if continued_last_tag != -1:
-                                                    # Use everything from the continued text after its last output tag
-                                                    suffix = continued_text[continued_last_tag + len("</PYTHON-OUTPUT>"):]
-                                                    final_text = prefix + suffix
-                                                    print(f"TOOL_DEBUG: Response {idx} - Found output tag in continued text, appending suffix")
-                                                else:
-                                                    # The continued text doesn't have the output tags
-                                                    # This is problematic - the model might have lost context
-                                                    # Just use the processed text to preserve the outputs
-                                                    final_text = processed_text
-                                                    print(f"TOOL_DEBUG: Response {idx} - Continued text lost output tags, using processed text")
-                                        else:
-                                            # This shouldn't happen if we found PYTHON-OUTPUT earlier
-                                            final_text = continued_text
-                                            print(f"TOOL_DEBUG: Response {idx} - Inconsistent state: PYTHON-OUTPUT found but no closing tag")
-                                    else:
-                                        # No PYTHON-OUTPUT tags, just use the continued text
-                                        final_text = continued_text
-                                        print(f"TOOL_DEBUG: Response {idx} - No PYTHON-OUTPUT tags found, using continued text")
-                                    
-                                    # Update the response
-                                    responses[idx].outputs[0].text = final_text
-                                    
-                                    # Log if the final text contains PYTHON-OUTPUT tags
-                                    if "<PYTHON-OUTPUT>" in final_text:
-                                        print(f"TOOL_DEBUG: Response {idx} - Final text contains PYTHON-OUTPUT tags")
-                                    else:
-                                        print(f"TOOL_DEBUG: Response {idx} - Final text does NOT contain PYTHON-OUTPUT tags")
-                                
-                        except Exception as e:
-                            print(f"TOOL_DEBUG: Error in batch continued generation: {str(e)}")
-                            # Keep the processed texts with tool outputs if continuation fails
-                        
-                        tool_execution_time = time.time() - generation_time
-                        print(f"TOOL_DEBUG: Tool execution and continued generation completed in {tool_execution_time:.4f} seconds")
+                    # Skip all the tool execution code
+                    tool_execution_time = time.time() - generation_time
+                    print(f"TOOL_DEBUG: Tool execution skipped in {tool_execution_time:.4f} seconds")
             else:
                 responses = []
 
@@ -322,7 +193,19 @@ class ToolLLMRayActor:
         """
         Return the responses for the actor with the given rank
         """
-        return self.responses.pop(actor_rank)
+        responses = self.responses.pop(actor_rank)
+        
+        # EXTREME DEBUG: Make sure our fixed string is preserved
+        for i, response in enumerate(responses):
+            # Double-check that our fixed string is still there
+            if "POTATO" not in response.outputs[0].text:
+                # If not, replace it again
+                response.outputs[0].text = "TOOL_ENGINE_REPLACEMENT_TEXT_POTATO_POTATO_POTATO"
+                print(f"TOOL_DEBUG: Re-added fixed string to response {i} before returning to actor")
+            else:
+                print(f"TOOL_DEBUG: Fixed string still present in response {i}")
+        
+        return responses
 
 
 def create_tool_vllm_engines(
