@@ -131,7 +131,20 @@ def extract_solution(solution_str):
     return []
 
 
-def reward_func(queries, prompts):
+def reward_func(queries, prompts, labels=None):
+    print("===DEBUGGING INFO===")
+
+    # Print the first 3 queries, prompts, and labels in a nicely formatted way
+    print("Queries:")
+    for i in range(3):
+        print(f"Query {i+1}: {queries[i]}")
+    print("\nPrompts:")
+    for i in range(3):
+        print(f"Prompt {i+1}: {prompts[i]}")
+    
+    print("===END DEBUGGING INFO===")
+
+
     rewards = []
     
     print(f"\nCalculating rewards for {len(queries)} samples")
