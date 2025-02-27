@@ -8,8 +8,60 @@ from contextlib import contextmanager
 from vina import Vina
 from rdkit import RDLogger
 from meeko import MoleculePreparation
+import time
+import json
 RDLogger.DisableLog('rdApp.*')
 
+# Simple file-based prompt logging that's compatible with Ray serialization
+_PROMPT_LOG_FILE = "prompt_history.log"
+_PROMPT_BUFFER_SIZE = 100  # Number of prompts to buffer before writing
+
+class PromptLogger:
+    """A serializable prompt logger that buffers prompts and periodically writes them to disk."""
+    
+    def __init__(self):
+        self.buffer = []
+        self.buffer_size = _PROMPT_BUFFER_SIZE
+    
+    def add_prompt(self, prompt_id, prompt, response):
+        """Add a prompt to the buffer and flush if needed."""
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        self.buffer.append({
+            "timestamp": timestamp,
+            "prompt_id": prompt_id,
+            "prompt": prompt,
+            "response": response
+        })
+        
+        if len(self.buffer) >= self.buffer_size:
+            self.flush()
+    
+    def flush(self):
+        """Write buffered prompts to the log file."""
+        if not self.buffer:
+            return
+            
+        try:
+            # Write each prompt as a separate JSON line for easier processing
+            with open(_PROMPT_LOG_FILE, 'a', encoding='utf-8') as f:
+                for entry in self.buffer:
+                    # Write as JSON line with delimiter for readability
+                    f.write("\n" + "="*80 + "\n")
+                    f.write(f"PROMPT ID: {entry['prompt_id']} | TIMESTAMP: {entry['timestamp']}\n")
+                    f.write("-"*80 + "\n")
+                    f.write(f"PROMPT:\n{entry['prompt']}\n")
+                    f.write("-"*80 + "\n")
+                    f.write(f"RESPONSE:\n{entry['response']}\n")
+                    f.write("="*80 + "\n\n")
+            
+            # Clear the buffer after successful write
+            self.buffer = []
+        except Exception as e:
+            print(f"Error writing prompts to log file: {str(e)}")
+
+# Create a new logger for each reward_func call to avoid serialization issues
+def get_prompt_logger():
+    return PromptLogger()
 
 class SuppressLibraryOutput:
     def __enter__(self):
@@ -122,11 +174,12 @@ def extract_solution(solution_str):
     elif "<|im_start|>assistant" in solution_str:
         solution_str = solution_str.split("<|im_start|>assistant", 1)[1]
     
+    # Use re.DOTALL to match across newlines
     answer_pattern = r'<answer>(.*?)</answer>'
-    match = re.finditer(answer_pattern, solution_str)
-    matches = list(match)
+    matches = list(re.finditer(answer_pattern, solution_str, re.DOTALL))
     if matches:
         final_answer = matches[-1].group(1).strip()
+        # Split by commas and strip each SMILES string
         return [s.strip() for s in final_answer.split(',') if s.strip()]
     return []
 
@@ -135,6 +188,9 @@ def reward_func(queries, prompts, labels=None):
     rewards = []
     
     print(f"\nCalculating rewards for {len(queries)} samples")
+    
+    # Create a new logger instance for this call (avoids serialization issues)
+    prompt_logger = get_prompt_logger()
     
     # Load current record from file
     record_file = "records.txt"
@@ -145,11 +201,17 @@ def reward_func(queries, prompts, labels=None):
     except (FileNotFoundError, IndexError, ValueError):
         current_record = float('-inf')
     
-    for query, prompt in zip(queries, prompts):
+    for i, (query, prompt) in enumerate(zip(queries, prompts)):
         response = query[len(prompt):]
+        
+        # Log the prompt and response to our buffer
+        prompt_id = f"{int(time.time())}_{i}"
+        prompt_logger.add_prompt(prompt_id, prompt, response)
+        
         smiles_strings = extract_solution(response)
         
         max_score = 0.0
+        best_molecule_score = 0.0  # Track molecule score separately
         best_smiles = None
         
         word_count_reward = 0.0
@@ -166,32 +228,36 @@ def reward_func(queries, prompts, labels=None):
                             positive_docking_score = 0 - docking_score
                             molecule_score = 5 * qed_score + 3 * positive_docking_score
 
-                            # If we're here, also add the extra reward for the word count of the entire response
+                            # Calculate word count reward separately
                             words = response.split()
                             word_count_reward = len(words) * 0.05
-                            molecule_score += word_count_reward
                             
-                            if molecule_score > max_score:
-                                max_score = molecule_score
+                            # Total score includes word count reward for RL training
+                            total_score = molecule_score + word_count_reward
+                            
+                            if total_score > max_score:
+                                max_score = total_score
+                                best_molecule_score = molecule_score  # Store molecule score without word count
                                 best_smiles = smiles
                 
                 except Exception as e:
                     print(f"Error processing molecule {smiles}: {str(e)}")
                     continue
         
-        # Add word count reward to the final score
-        max_score += word_count_reward
-        
-        # Record if we have a new best score
-        if max_score > current_record and best_smiles is not None:
+        # Record if we have a new best molecule score (without word count reward)
+        if best_molecule_score > current_record and best_smiles is not None:
             try:
                 with open(record_file, 'a') as f:
-                    f.write(f"{best_smiles},{max_score}\n")
-                current_record = max_score
+                    f.write(f"{best_smiles},{best_molecule_score}\n")
+                current_record = best_molecule_score
             except Exception as e:
                 print(f"Failed to write to records file: {str(e)}")
         
+        # For RL training reward, we still use the total score including word count
         rewards.append(max(max_score, 0))
+    
+    # Make sure to flush any remaining prompts before returning
+    prompt_logger.flush()
     
     rewards = torch.tensor(rewards, dtype=torch.float32)
     

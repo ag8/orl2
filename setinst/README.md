@@ -201,5 +201,9 @@ ray job submit --address="http://127.0.0.1:8265" \
 --use_wandb 6a7e6c36b9bc885d48cb355afb10998284b9e8ef \
 --enable_tool_use \
 --num_tool_executors 32 \
---max_ckpt_mem 100
+--max_ckpt_mem 100 \
+--advantage_estimator group_norm \
+--n_samples_per_prompt 4 \
+--lora_rank 64 \
+--lora_alpha 128
 ```

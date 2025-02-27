@@ -100,6 +100,8 @@ def train(args):
                 vllm_enable_sleep=args.vllm_enable_sleep,
                 tool_use_enabled=args.enable_tool_use,
                 num_tool_executors=args.num_tool_executors,
+                max_output_length=args.tool_max_output_length if hasattr(args, 'tool_max_output_length') else 10000,
+                timeout_seconds=args.tool_timeout_seconds if hasattr(args, 'tool_timeout_seconds') else 30,
             )
         else:
             vllm_engines = create_vllm_engines(
@@ -417,6 +419,8 @@ if __name__ == "__main__":
     # Tool use parameters
     parser.add_argument("--enable_tool_use", action="store_true", default=False, help="Enable tool use capabilities")
     parser.add_argument("--num_tool_executors", type=int, default=32, help="Number of parallel tool executors")
+    parser.add_argument("--tool_max_output_length", type=int, default=10000, help="Maximum length of captured output from tool execution")
+    parser.add_argument("--tool_timeout_seconds", type=int, default=30, help="Maximum execution time in seconds for tool execution")
 
     args = parser.parse_args()
 
