@@ -26,10 +26,11 @@ logger = init_logger(__name__)
 class ToolExecutorActor:
     """Ray actor for executing Python code in parallel."""
     
-    def __init__(self, max_output_length: int = 1000):
+    def __init__(self, max_output_length: int = 10000, timeout_seconds: int = 30):
         self.max_output_length = max_output_length
-        self.executor = ToolExecutor(max_output_length=max_output_length)
-        print(f"TOOL_DEBUG: Initialized ToolExecutorActor with max_output_length={max_output_length}")
+        self.timeout_seconds = timeout_seconds
+        self.executor = ToolExecutor(max_output_length=max_output_length, timeout_seconds=timeout_seconds)
+        print(f"TOOL_DEBUG: Initialized ToolExecutorActor with max_output_length={max_output_length}, timeout={timeout_seconds}s")
     
     def execute_code(self, code: str) -> str:
         """Execute Python code and return the output."""
@@ -91,6 +92,7 @@ class ToolLLMRayActor:
         self.tool_use_enabled = kwargs.pop("tool_use_enabled", False)
         self.num_tool_executors = kwargs.pop("num_tool_executors", 32)  # Default to 32 parallel executors
         self.max_output_length = kwargs.pop("max_output_length", 10000)  # Default to 10000 characters
+        self.timeout_seconds = kwargs.pop("timeout_seconds", 30)  # Default to 30 seconds timeout
         
         # Print a clear marker to verify this engine is being used
         print("*" * 80)
@@ -98,14 +100,15 @@ class ToolLLMRayActor:
         print(f"Tool use enabled: {self.tool_use_enabled}")
         print(f"Number of tool executors: {self.num_tool_executors}")
         print(f"Max output length: {self.max_output_length}")
+        print(f"Timeout seconds: {self.timeout_seconds}")
         print("*" * 80)
         
         # Create tool executor actors if tool use is enabled
         self.tool_executors = []
         if self.tool_use_enabled:
-            print(f"Creating {self.num_tool_executors} tool executor actors with max_output_length={self.max_output_length}")
+            print(f"Creating {self.num_tool_executors} tool executor actors with max_output_length={self.max_output_length}, timeout={self.timeout_seconds}s")
             for _ in range(self.num_tool_executors):
-                self.tool_executors.append(ToolExecutorActor.remote(max_output_length=self.max_output_length))
+                self.tool_executors.append(ToolExecutorActor.remote(max_output_length=self.max_output_length, timeout_seconds=self.timeout_seconds))
 
         self.llm = LLM(*args, **kwargs)
 
@@ -483,6 +486,7 @@ def create_tool_vllm_engines(
     tool_use_enabled=False,
     num_tool_executors=32,
     max_output_length=10000,
+    timeout_seconds=30,
 ):
     """
     Create VLLM engines with tool use capabilities.
@@ -503,6 +507,7 @@ def create_tool_vllm_engines(
         tool_use_enabled: Whether to enable tool use
         num_tool_executors: Number of parallel tool executors
         max_output_length: Maximum length of captured output from tool execution
+        timeout_seconds: Maximum execution time in seconds for tool execution
     """
     import vllm
 
@@ -513,6 +518,7 @@ def create_tool_vllm_engines(
     print(f"Tool use enabled: {tool_use_enabled}")
     print(f"Number of tool executors: {num_tool_executors}")
     print(f"Max output length: {max_output_length}")
+    print(f"Timeout seconds: {timeout_seconds}")
     print("*" * 80)
 
     assert vllm.__version__ >= "0.7.0", "OpenRLHF only supports vllm >= 0.7.0"
@@ -578,6 +584,7 @@ def create_tool_vllm_engines(
                 tool_use_enabled=tool_use_enabled,
                 num_tool_executors=num_tool_executors,
                 max_output_length=max_output_length,
+                timeout_seconds=timeout_seconds,
             )
         )
 
