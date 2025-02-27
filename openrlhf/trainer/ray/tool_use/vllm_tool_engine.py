@@ -195,15 +195,29 @@ class ToolLLMRayActor:
         """
         responses = self.responses.pop(actor_rank)
         
-        # EXTREME DEBUG: Make sure our fixed string is preserved
+        # EXTREME DEBUG: Replace both text and token_ids with POTATO
         for i, response in enumerate(responses):
-            # Double-check that our fixed string is still there
-            if "POTATO" not in response.outputs[0].text:
-                # If not, replace it again
-                response.outputs[0].text = "TOOL_ENGINE_REPLACEMENT_TEXT_POTATO_POTATO_POTATO"
-                print(f"TOOL_DEBUG: Re-added fixed string to response {i} before returning to actor")
-            else:
-                print(f"TOOL_DEBUG: Fixed string still present in response {i}")
+            # Replace the text with our fixed string
+            response.outputs[0].text = "TOOL_ENGINE_REPLACEMENT_TEXT_POTATO_POTATO_POTATO"
+            
+            # More importantly, replace the token_ids with a simple repeating pattern
+            # We'll use the same token ID repeated, which should be safe
+            # Most models have token 1 as a common token (often <s> or another special token)
+            original_length = len(response.outputs[0].token_ids)
+            
+            # Get the first token ID from the original response to ensure it's valid
+            # If empty, use 1 as a fallback (common special token)
+            safe_token = 1
+            if len(response.outputs[0].token_ids) > 0:
+                safe_token = response.outputs[0].token_ids[0]
+            
+            # Create an array of the same token repeated
+            potato_tokens = [safe_token] * original_length
+            
+            # Replace the token_ids
+            response.outputs[0].token_ids = potato_tokens
+                
+            print(f"TOOL_DEBUG: Replaced token_ids for response {i} with {safe_token} repeated {original_length} times")
         
         return responses
 
