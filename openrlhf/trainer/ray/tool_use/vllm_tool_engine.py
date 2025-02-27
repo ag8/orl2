@@ -90,20 +90,22 @@ class ToolLLMRayActor:
         # Initialize tool use capabilities
         self.tool_use_enabled = kwargs.pop("tool_use_enabled", False)
         self.num_tool_executors = kwargs.pop("num_tool_executors", 32)  # Default to 32 parallel executors
+        self.max_output_length = kwargs.pop("max_output_length", 10000)  # Default to 10000 characters
         
         # Print a clear marker to verify this engine is being used
         print("*" * 80)
         print("INITIALIZING TOOL-ENABLED VLLM ENGINE")
         print(f"Tool use enabled: {self.tool_use_enabled}")
         print(f"Number of tool executors: {self.num_tool_executors}")
+        print(f"Max output length: {self.max_output_length}")
         print("*" * 80)
         
         # Create tool executor actors if tool use is enabled
         self.tool_executors = []
         if self.tool_use_enabled:
-            print(f"Creating {self.num_tool_executors} tool executor actors")
+            print(f"Creating {self.num_tool_executors} tool executor actors with max_output_length={self.max_output_length}")
             for _ in range(self.num_tool_executors):
-                self.tool_executors.append(ToolExecutorActor.remote(max_output_length=1000))
+                self.tool_executors.append(ToolExecutorActor.remote(max_output_length=self.max_output_length))
 
         self.llm = LLM(*args, **kwargs)
 
@@ -161,10 +163,15 @@ class ToolLLMRayActor:
             # Try to tokenize the new text
             new_token_ids = self.llm.llm_engine.tokenizer.encode(new_text)
             
-            # If the new token IDs are too long, truncate them
-            if len(new_token_ids) > original_length:
-                print(f"TOOL_DEBUG: Truncating token IDs from {len(new_token_ids)} to {original_length}")
-                new_token_ids = new_token_ids[:original_length]
+            # For continuations, we want to allow longer token sequences
+            # Only truncate if it's extremely long (more than 3x the original)
+            max_allowed_length = max(original_length * 3, 4096)  # todo: make this match the maximum generation length from the configuration
+            
+            if len(new_token_ids) > max_allowed_length:
+                print(f"TOOL_DEBUG: Truncating extremely long token IDs from {len(new_token_ids)} to {max_allowed_length}")
+                new_token_ids = new_token_ids[:max_allowed_length]
+            elif len(new_token_ids) > original_length:
+                print(f"TOOL_DEBUG: Allowing longer token sequence: {len(new_token_ids)} vs original {original_length}")
             # If they're too short, pad with a safe token
             elif len(new_token_ids) < original_length:
                 safe_token = 1  # Default safe token
@@ -306,11 +313,35 @@ class ToolLLMRayActor:
             if not continuation_prompts:
                 print("TOOL_DEBUG: No continuation prompts created, skipping batch generation")
                 return
+            
+            # Create a new sampling_params object with a higher max_tokens value for continuation
+            # This ensures we have enough tokens for a substantial continuation
+            from copy import deepcopy
+            from vllm import SamplingParams
+            
+            # Clone the original sampling params
+            continuation_sampling_params = sampling_params.clone()
+            
+            # Get the original max_tokens value
+            original_max_tokens = getattr(continuation_sampling_params, "max_tokens", 1024)
+            
+            # Set a higher max_tokens value for continuation (at least 1000 tokens)
+            # If the original max_tokens is already high, use that
+            continuation_max_tokens = max(1000, original_max_tokens)
+            
+            # Update the max_tokens value
+            continuation_sampling_params.max_tokens = continuation_max_tokens
+            
+            # Set a minimum number of tokens to generate
+            continuation_sampling_params.min_tokens = 100
+            
+            print(f"TOOL_DEBUG: Original max_tokens: {original_max_tokens}, Continuation max_tokens: {continuation_max_tokens}")
+            print(f"TOOL_DEBUG: Continuation sampling parameters: {continuation_sampling_params}")
                 
-            # Generate continuations in batch
+            # Generate continuations in batch with the new sampling params
             print(f"TOOL_DEBUG: Continuing generation for {len(continuation_prompts)} responses")
             continued_responses = self.llm.generate(
-                sampling_params=sampling_params,
+                sampling_params=continuation_sampling_params,
                 prompt_token_ids=continuation_prompts
             )
             
@@ -326,6 +357,11 @@ class ToolLLMRayActor:
                     continuation = continued_responses[i].outputs[0].text
                     
                     print(f"TOOL_DEBUG: Response {idx} - Got continuation of length {len(continuation)}")
+                    print(f"TOOL_DEBUG: Response {idx} - Continuation preview: {continuation[:100]}...")
+                    
+                    # Check if the continuation is too short
+                    if len(continuation) < 50:
+                        print(f"TOOL_DEBUG: WARNING - Response {idx} has a very short continuation ({len(continuation)} chars)")
                     
                     # Create the final text with the processed output and the continuation
                     last_output_end = processed_text.rfind("</PYTHON-OUTPUT>")
@@ -339,6 +375,8 @@ class ToolLLMRayActor:
                         responses[idx], final_text, original_token_ids
                     )
                     
+                    # Log the final text length
+                    print(f"TOOL_DEBUG: Response {idx} - Final text length: {len(final_text)}")
                     print(f"TOOL_DEBUG: Response {idx} - Updated with continuation")
                 except Exception as e:
                     print(f"TOOL_DEBUG: Error processing continuation for response {idx}: {str(e)}")
@@ -444,6 +482,7 @@ def create_tool_vllm_engines(
     vllm_enable_sleep=False,
     tool_use_enabled=False,
     num_tool_executors=32,
+    max_output_length=10000,
 ):
     """
     Create VLLM engines with tool use capabilities.
@@ -463,6 +502,7 @@ def create_tool_vllm_engines(
         vllm_enable_sleep: Whether to enable sleep mode
         tool_use_enabled: Whether to enable tool use
         num_tool_executors: Number of parallel tool executors
+        max_output_length: Maximum length of captured output from tool execution
     """
     import vllm
 
@@ -472,6 +512,7 @@ def create_tool_vllm_engines(
     print(f"Number of engines: {num_engines}")
     print(f"Tool use enabled: {tool_use_enabled}")
     print(f"Number of tool executors: {num_tool_executors}")
+    print(f"Max output length: {max_output_length}")
     print("*" * 80)
 
     assert vllm.__version__ >= "0.7.0", "OpenRLHF only supports vllm >= 0.7.0"
@@ -536,6 +577,7 @@ def create_tool_vllm_engines(
                 enable_sleep_mode=vllm_enable_sleep,
                 tool_use_enabled=tool_use_enabled,
                 num_tool_executors=num_tool_executors,
+                max_output_length=max_output_length,
             )
         )
 

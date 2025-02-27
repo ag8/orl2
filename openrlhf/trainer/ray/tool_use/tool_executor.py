@@ -27,7 +27,7 @@ class ToolExecutor:
     4. Injecting the output back into the text
     """
     
-    def __init__(self, max_output_length: int = 1000):
+    def __init__(self, max_output_length: int = 10000):
         """
         Initialize the ToolExecutor.
         
