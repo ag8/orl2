@@ -142,6 +142,228 @@ class ToolLLMRayActor:
         
         return blocks
 
+    def _update_token_ids(self, response, new_text, original_token_ids):
+        """
+        Helper method to update token IDs for a response to match new text.
+        Handles truncation, padding, and error conditions.
+        
+        Args:
+            response: The response object to update
+            new_text: The new text to tokenize
+            original_token_ids: The original token IDs for reference
+            
+        Returns:
+            The updated token IDs
+        """
+        original_length = len(original_token_ids)
+        
+        try:
+            # Try to tokenize the new text
+            new_token_ids = self.llm.llm_engine.tokenizer.encode(new_text)
+            
+            # If the new token IDs are too long, truncate them
+            if len(new_token_ids) > original_length:
+                print(f"TOOL_DEBUG: Truncating token IDs from {len(new_token_ids)} to {original_length}")
+                new_token_ids = new_token_ids[:original_length]
+            # If they're too short, pad with a safe token
+            elif len(new_token_ids) < original_length:
+                safe_token = 1  # Default safe token
+                if len(original_token_ids) > 0:
+                    safe_token = original_token_ids[0]
+                padding = [safe_token] * (original_length - len(new_token_ids))
+                print(f"TOOL_DEBUG: Padding token IDs from {len(new_token_ids)} to {original_length}")
+                new_token_ids = new_token_ids + padding
+            
+            return new_token_ids
+            
+        except Exception as e:
+            print(f"TOOL_DEBUG: Error updating token IDs: {str(e)}")
+            # If tokenization fails, use a safe fallback
+            safe_token = 1
+            if len(original_token_ids) > 0:
+                safe_token = original_token_ids[0]
+            return [safe_token] * original_length
+
+    def _process_responses_with_code_execution(self, responses, sampling_params):
+        """
+        Process responses that may contain Python code blocks:
+        1. Extract code blocks
+        2. Execute the code in parallel
+        3. Insert output after code blocks
+        4. Generate continuations
+        
+        Args:
+            responses: List of LLM responses
+            sampling_params: Sampling parameters for continuation generation
+            
+        Returns:
+            Updated responses with code execution outputs
+        """
+        if not self.tool_use_enabled or not self.tool_executors:
+            return responses
+            
+        generation_time = time.time()
+        print(f"TOOL_DEBUG: Processing {len(responses)} responses with tool executors")
+        
+        # Find responses containing Python code blocks
+        processing_tasks = []
+        response_indices = []
+        
+        for i, response in enumerate(responses):
+            output_text = response.outputs[0].text
+            
+            # Check if the response contains Python code blocks
+            if "<PYTHON>" in output_text and "</PYTHON>" in output_text:
+                # Assign to a tool executor in a round-robin fashion
+                executor_idx = i % len(self.tool_executors)
+                executor = self.tool_executors[executor_idx]
+                
+                print(f"TOOL_DEBUG: Response {i} contains Python code blocks, assigning to executor {executor_idx}")
+                
+                # Process the entire text with all code blocks
+                processing_tasks.append(executor.process_text.remote(output_text))
+                response_indices.append(i)
+            else:
+                print(f"TOOL_DEBUG: Response {i} does not contain Python code blocks")
+        
+        # Wait for all processing to complete
+        if not processing_tasks:
+            return responses
+            
+        print(f"TOOL_DEBUG: Waiting for {len(processing_tasks)} tool execution tasks to complete")
+        processed_texts = ray.get(processing_tasks)
+        
+        # Update responses with processed texts (containing <PYTHON-OUTPUT> tags)
+        for idx, processed_text in zip(response_indices, processed_texts):
+            # Store the original token IDs for length reference
+            original_token_ids = responses[idx].outputs[0].token_ids
+            
+            # Update the text with executed code outputs
+            responses[idx].outputs[0].text = processed_text
+            print(f"TOOL_DEBUG: Updated response {idx} with processed text")
+            
+            # Update token IDs to match the new text
+            new_token_ids = self._update_token_ids(
+                responses[idx], processed_text, original_token_ids
+            )
+            responses[idx].outputs[0].token_ids = new_token_ids
+        
+        # Generate continuations for responses with Python outputs
+        self._generate_continuations(responses, response_indices, processed_texts, sampling_params)
+        
+        tool_execution_time = time.time() - generation_time
+        print(f"TOOL_DEBUG: Tool execution and continued generation completed in {tool_execution_time:.4f} seconds")
+        
+        return responses
+
+    def _generate_continuations(self, responses, response_indices, processed_texts, sampling_params):
+        """
+        Generate continuations for responses that have Python outputs.
+        
+        Args:
+            responses: List of LLM responses
+            response_indices: Indices of responses that were processed
+            processed_texts: List of processed texts with Python outputs
+            sampling_params: Sampling parameters for generation
+        """
+        try:
+            # Prepare prompts for continuation generation
+            continuation_prompts = []
+            continuation_indices = []
+            processed_texts_map = {}  # Store processed texts for later use
+            
+            for idx, processed_text in zip(response_indices, processed_texts):
+                if "<PYTHON-OUTPUT>" not in processed_text:
+                    print(f"TOOL_DEBUG: Response {idx} - No PYTHON-OUTPUT tags found, skipping continuation")
+                    continue
+                    
+                try:
+                    # Create a continuation prompt with analyzed output
+                    last_output_end = processed_text.rfind("</PYTHON-OUTPUT>")
+                    
+                    if last_output_end == -1:
+                        print(f"TOOL_DEBUG: Response {idx} - Inconsistent state: PYTHON-OUTPUT found but no closing tag")
+                        continue
+                        
+                    # Take everything up to and including the last PYTHON-OUTPUT tag
+                    continuation_prompt = processed_text[:last_output_end + len("</PYTHON-OUTPUT>")]
+                    # Add prompt for continuation
+                    continuation_prompt += "\n\nCool, so here's what this output means: "
+                    
+                    # Tokenize the continuation prompt
+                    tokens = self.llm.llm_engine.tokenizer.encode(continuation_prompt)
+                    
+                    continuation_prompts.append(tokens)
+                    continuation_indices.append(idx)
+                    processed_texts_map[idx] = {
+                        "processed_text": processed_text,
+                        "continuation_prompt": continuation_prompt
+                    }
+                    print(f"TOOL_DEBUG: Created continuation prompt for response {idx}, token length: {len(tokens)}")
+                except Exception as e:
+                    print(f"TOOL_DEBUG: Error creating continuation prompt for response {idx}: {str(e)}")
+            
+            if not continuation_prompts:
+                print("TOOL_DEBUG: No continuation prompts created, skipping batch generation")
+                return
+                
+            # Generate continuations in batch
+            print(f"TOOL_DEBUG: Continuing generation for {len(continuation_prompts)} responses")
+            continued_responses = self.llm.generate(
+                sampling_params=sampling_params,
+                prompt_token_ids=continuation_prompts
+            )
+            
+            # Update responses with continuations
+            for i, idx in enumerate(continuation_indices):
+                try:
+                    data = processed_texts_map[idx]
+                    processed_text = data["processed_text"]
+                    continuation_prompt = data["continuation_prompt"]
+                    
+                    # The continued_text is the model's response - it's already just the continuation
+                    # We don't need to extract anything from it
+                    continuation = continued_responses[i].outputs[0].text
+                    
+                    print(f"TOOL_DEBUG: Response {idx} - Got continuation of length {len(continuation)}")
+                    
+                    # Create the final text with the processed output and the continuation
+                    last_output_end = processed_text.rfind("</PYTHON-OUTPUT>")
+                    final_text = processed_text[:last_output_end + len("</PYTHON-OUTPUT>")]
+                    final_text += "\n\nCool, so here's what this output means: " + continuation
+                    
+                    # Update the response and its token IDs
+                    original_token_ids = responses[idx].outputs[0].token_ids
+                    responses[idx].outputs[0].text = final_text
+                    responses[idx].outputs[0].token_ids = self._update_token_ids(
+                        responses[idx], final_text, original_token_ids
+                    )
+                    
+                    print(f"TOOL_DEBUG: Response {idx} - Updated with continuation")
+                except Exception as e:
+                    print(f"TOOL_DEBUG: Error processing continuation for response {idx}: {str(e)}")
+                    # Use a default continuation if there's an error
+                    try:
+                        processed_text = processed_texts_map[idx]["processed_text"]
+                        last_output_end = processed_text.rfind("</PYTHON-OUTPUT>")
+                        final_text = processed_text[:last_output_end + len("</PYTHON-OUTPUT>")]
+                        final_text += "\n\nBased on this output, I can analyze that "
+                        
+                        # Update the response and its token IDs
+                        original_token_ids = responses[idx].outputs[0].token_ids
+                        responses[idx].outputs[0].text = final_text
+                        responses[idx].outputs[0].token_ids = self._update_token_ids(
+                            responses[idx], final_text, original_token_ids
+                        )
+                        print(f"TOOL_DEBUG: Response {idx} - Used default continuation due to error")
+                    except Exception as nested_e:
+                        print(f"TOOL_DEBUG: Failed to apply default continuation for response {idx}: {str(nested_e)}")
+                
+        except Exception as e:
+            print(f"TOOL_DEBUG: Error in batch continuation generation: {str(e)}")
+            import traceback
+            print(f"TOOL_DEBUG: {traceback.format_exc()}")
+
     def add_requests(self, actor_rank, *, sampling_params, prompt_token_ids):
         """
         Save the requests from actors and generate responses when all actors have sent their requests
@@ -160,23 +382,9 @@ class ToolLLMRayActor:
                 # For now we assume that all requests have the same sampling params
                 responses = self.llm.generate(sampling_params=sampling_params, prompt_token_ids=requests)
                 
-                # EXTREME DEBUG: Replace all response texts with a fixed string
-                for i, response in enumerate(responses):
-                    # Replace the entire text with a fixed string that would be impossible to miss
-                    response.outputs[0].text = "TOOL_ENGINE_REPLACEMENT_TEXT_POTATO_POTATO_POTATO"
-                    print(f"TOOL_DEBUG: Replaced response {i} with fixed string")
-                
                 # Process responses with tool executors if enabled
                 if self.tool_use_enabled and self.tool_executors:
-                    generation_time = time.time()
-                    print(f"TOOL_DEBUG: Processing {len(responses)} responses with tool executors")
-                    
-                    # EXTREME DEBUG: Skip all tool execution and just keep our fixed string
-                    print(f"TOOL_DEBUG: EXTREME DEBUG MODE - Skipping all tool execution and keeping fixed string")
-                    
-                    # Skip all the tool execution code
-                    tool_execution_time = time.time() - generation_time
-                    print(f"TOOL_DEBUG: Tool execution skipped in {tool_execution_time:.4f} seconds")
+                    responses = self._process_responses_with_code_execution(responses, sampling_params)
             else:
                 responses = []
 
@@ -195,29 +403,29 @@ class ToolLLMRayActor:
         """
         responses = self.responses.pop(actor_rank)
         
-        # EXTREME DEBUG: Replace both text and token_ids with POTATO
+        # Verify that both text and token IDs are properly set for each response
         for i, response in enumerate(responses):
-            # Replace the text with our fixed string
-            response.outputs[0].text = "TOOL_ENGINE_REPLACEMENT_TEXT_POTATO_POTATO_POTATO"
+            # Check if the text and token IDs are consistent
+            text_length = len(response.outputs[0].text)
+            token_ids_length = len(response.outputs[0].token_ids)
             
-            # More importantly, replace the token_ids with a simple repeating pattern
-            # We'll use the same token ID repeated, which should be safe
-            # Most models have token 1 as a common token (often <s> or another special token)
-            original_length = len(response.outputs[0].token_ids)
+            print(f"TOOL_DEBUG: Response {i} - Text length: {text_length}, Token IDs length: {token_ids_length}")
             
-            # Get the first token ID from the original response to ensure it's valid
-            # If empty, use 1 as a fallback (common special token)
-            safe_token = 1
-            if len(response.outputs[0].token_ids) > 0:
-                safe_token = response.outputs[0].token_ids[0]
+            # If there's a mismatch, log a warning
+            if text_length > 0 and token_ids_length == 0:
+                print(f"TOOL_DEBUG: WARNING - Response {i} has text but no token IDs")
+                # Create token IDs from the text as a fallback
+                try:
+                    token_ids = self.llm.llm_engine.tokenizer.encode(response.outputs[0].text)
+                    response.outputs[0].token_ids = token_ids
+                    print(f"TOOL_DEBUG: Created token IDs for response {i}, length: {len(token_ids)}")
+                except Exception as e:
+                    print(f"TOOL_DEBUG: Error creating token IDs for response {i}: {str(e)}")
+                    # Use a safe fallback
+                    response.outputs[0].token_ids = [1] * min(100, text_length)  # Use a reasonable default length
             
-            # Create an array of the same token repeated
-            potato_tokens = [safe_token] * original_length
-            
-            # Replace the token_ids
-            response.outputs[0].token_ids = potato_tokens
-                
-            print(f"TOOL_DEBUG: Replaced token_ids for response {i} with {safe_token} repeated {original_length} times")
+            # Final verification
+            print(f"TOOL_DEBUG: Final response {i} - Text: {response.outputs[0].text[:50]}..., Token IDs length: {len(response.outputs[0].token_ids)}")
         
         return responses
 

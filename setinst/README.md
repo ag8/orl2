@@ -130,8 +130,8 @@ ray job submit --address="http://127.0.0.1:8265" \
 --rollout_batch_size 128 \
 --max_samples 100000 \
 --max_epochs 2 \
---prompt_max_len 1024 \
---generate_max_len 1024 \
+--prompt_max_len 2048 \
+--generate_max_len 4096 \
 --zero_stage 3 \
 --bf16 \
 --actor_learning_rate 5e-7 \
