@@ -131,7 +131,7 @@ def extract_solution(solution_str):
     return []
 
 
-def reward_func(queries, prompts):
+def reward_func(queries, prompts, labels=None):
     rewards = []
     
     print(f"\nCalculating rewards for {len(queries)} samples")
