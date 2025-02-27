@@ -9,79 +9,59 @@ from vina import Vina
 from rdkit import RDLogger
 from meeko import MoleculePreparation
 import time
-import threading
-import queue
+import json
 RDLogger.DisableLog('rdApp.*')
 
-# Global prompt buffer and lock for thread safety
-_PROMPT_BUFFER = []
-_PROMPT_BUFFER_LOCK = threading.Lock()
-_PROMPT_BUFFER_MAX_SIZE = 100  # Flush after this many prompts
+# Simple file-based prompt logging that's compatible with Ray serialization
 _PROMPT_LOG_FILE = "prompt_history.log"
-_PROMPT_WRITER_THREAD = None
-_PROMPT_QUEUE = queue.Queue()
-_SHUTDOWN_EVENT = threading.Event()
+_PROMPT_BUFFER_SIZE = 100  # Number of prompts to buffer before writing
 
-def _prompt_writer_worker():
-    """Background thread that writes prompts to the log file."""
-    while not _SHUTDOWN_EVENT.is_set() or not _PROMPT_QUEUE.empty():
+class PromptLogger:
+    """A serializable prompt logger that buffers prompts and periodically writes them to disk."""
+    
+    def __init__(self):
+        self.buffer = []
+        self.buffer_size = _PROMPT_BUFFER_SIZE
+    
+    def add_prompt(self, prompt_id, prompt, response):
+        """Add a prompt to the buffer and flush if needed."""
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        self.buffer.append({
+            "timestamp": timestamp,
+            "prompt_id": prompt_id,
+            "prompt": prompt,
+            "response": response
+        })
+        
+        if len(self.buffer) >= self.buffer_size:
+            self.flush()
+    
+    def flush(self):
+        """Write buffered prompts to the log file."""
+        if not self.buffer:
+            return
+            
         try:
-            # Wait for items with a timeout to allow checking the shutdown event
-            batch = _PROMPT_QUEUE.get(timeout=1.0)
-            if batch:
-                with open(_PROMPT_LOG_FILE, 'a', encoding='utf-8') as f:
-                    for prompt_data in batch:
-                        timestamp, prompt_id, prompt, response = prompt_data
-                        f.write(f"\n{'='*80}\n")
-                        f.write(f"PROMPT ID: {prompt_id} | TIMESTAMP: {timestamp}\n")
-                        f.write(f"{'-'*80}\n")
-                        f.write(f"PROMPT:\n{prompt}\n")
-                        f.write(f"{'-'*80}\n")
-                        f.write(f"RESPONSE:\n{response}\n")
-                        f.write(f"{'='*80}\n\n")
-            _PROMPT_QUEUE.task_done()
-        except queue.Empty:
-            # No items in queue, just continue and check shutdown event
-            continue
+            # Write each prompt as a separate JSON line for easier processing
+            with open(_PROMPT_LOG_FILE, 'a', encoding='utf-8') as f:
+                for entry in self.buffer:
+                    # Write as JSON line with delimiter for readability
+                    f.write("\n" + "="*80 + "\n")
+                    f.write(f"PROMPT ID: {entry['prompt_id']} | TIMESTAMP: {entry['timestamp']}\n")
+                    f.write("-"*80 + "\n")
+                    f.write(f"PROMPT:\n{entry['prompt']}\n")
+                    f.write("-"*80 + "\n")
+                    f.write(f"RESPONSE:\n{entry['response']}\n")
+                    f.write("="*80 + "\n\n")
+            
+            # Clear the buffer after successful write
+            self.buffer = []
         except Exception as e:
-            print(f"Error in prompt writer thread: {str(e)}")
+            print(f"Error writing prompts to log file: {str(e)}")
 
-def _ensure_writer_thread():
-    """Ensure the background writer thread is running."""
-    global _PROMPT_WRITER_THREAD
-    if _PROMPT_WRITER_THREAD is None or not _PROMPT_WRITER_THREAD.is_alive():
-        _SHUTDOWN_EVENT.clear()
-        _PROMPT_WRITER_THREAD = threading.Thread(target=_prompt_writer_worker, daemon=True)
-        _PROMPT_WRITER_THREAD.start()
-
-def _buffer_prompt(prompt_id, prompt, response):
-    """Add a prompt to the buffer and flush if needed."""
-    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-    with _PROMPT_BUFFER_LOCK:
-        _PROMPT_BUFFER.append((timestamp, prompt_id, prompt, response))
-        if len(_PROMPT_BUFFER) >= _PROMPT_BUFFER_MAX_SIZE:
-            _flush_prompt_buffer()
-
-def _flush_prompt_buffer():
-    """Flush the prompt buffer to the log file."""
-    global _PROMPT_BUFFER
-    with _PROMPT_BUFFER_LOCK:
-        if _PROMPT_BUFFER:
-            _ensure_writer_thread()
-            _PROMPT_QUEUE.put(list(_PROMPT_BUFFER))
-            _PROMPT_BUFFER = []
-
-def shutdown_prompt_logger():
-    """Shutdown the prompt logger, flushing any remaining prompts."""
-    _flush_prompt_buffer()
-    _SHUTDOWN_EVENT.set()
-    if _PROMPT_WRITER_THREAD and _PROMPT_WRITER_THREAD.is_alive():
-        _PROMPT_WRITER_THREAD.join(timeout=5.0)
-
-# Register shutdown function to be called at exit
-import atexit
-atexit.register(shutdown_prompt_logger)
-
+# Create a new logger for each reward_func call to avoid serialization issues
+def get_prompt_logger():
+    return PromptLogger()
 
 class SuppressLibraryOutput:
     def __enter__(self):
@@ -209,6 +189,9 @@ def reward_func(queries, prompts, labels=None):
     
     print(f"\nCalculating rewards for {len(queries)} samples")
     
+    # Create a new logger instance for this call (avoids serialization issues)
+    prompt_logger = get_prompt_logger()
+    
     # Load current record from file
     record_file = "records.txt"
     try:
@@ -222,8 +205,8 @@ def reward_func(queries, prompts, labels=None):
         response = query[len(prompt):]
         
         # Log the prompt and response to our buffer
-        prompt_id = f"{time.time():.0f}_{i}"
-        _buffer_prompt(prompt_id, prompt, response)
+        prompt_id = f"{int(time.time())}_{i}"
+        prompt_logger.add_prompt(prompt_id, prompt, response)
         
         smiles_strings = extract_solution(response)
         
@@ -272,6 +255,9 @@ def reward_func(queries, prompts, labels=None):
         
         # For RL training reward, we still use the total score including word count
         rewards.append(max(max_score, 0))
+    
+    # Make sure to flush any remaining prompts before returning
+    prompt_logger.flush()
     
     rewards = torch.tensor(rewards, dtype=torch.float32)
     
