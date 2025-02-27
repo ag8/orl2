@@ -530,6 +530,10 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
                 "actor_value_rm_time": 0,
                 "wait_time": 0,
             }
+        # Add few-shot examples to prompts if we have any
+        if len(self.best_examples) > 0:
+            all_prompts = self.add_few_shot_examples(all_prompts)
+        
         experiences = super().make_experience_list(all_prompts, all_labels, **generate_kwargs)
         
         # Track best examples based on rewards
@@ -608,9 +612,6 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
         When not using vllm, we will fallback to the default implementation,
         in which actor will be used to generate samples.
         """
-        # Add few-shot examples to prompts if we have any
-        if len(self.best_examples) > 0:
-            all_prompts = self.add_few_shot_examples(all_prompts)
             
         if self.vllm_engines is None:
             return super().generate_samples(all_prompts, all_labels, **generate_kwargs)
@@ -730,7 +731,7 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
                 queries = self.tokenizer.batch_decode(sequences_list, skip_special_tokens=False)
 
             if self.custom_reward_func:
-                r = self.custom_reward_func.remote(queries, samples.prompts, samples.labels)
+                r = self.custom_reward_func.remote(queries, samples.prompts)
                 r_refs.append(r)
             else:
                 for rm in self.remote_rm_url:
