@@ -150,6 +150,7 @@ def reward_func(queries, prompts, labels=None):
         smiles_strings = extract_solution(response)
         
         max_score = 0.0
+        best_molecule_score = 0.0  # Track molecule score separately
         best_smiles = None
         
         word_count_reward = 0.0
@@ -166,31 +167,32 @@ def reward_func(queries, prompts, labels=None):
                             positive_docking_score = 0 - docking_score
                             molecule_score = 5 * qed_score + 3 * positive_docking_score
 
-                            # If we're here, also add the extra reward for the word count of the entire response
+                            # Calculate word count reward separately
                             words = response.split()
                             word_count_reward = len(words) * 0.05
-                            molecule_score += word_count_reward
                             
-                            if molecule_score > max_score:
-                                max_score = molecule_score
+                            # Total score includes word count reward for RL training
+                            total_score = molecule_score + word_count_reward
+                            
+                            if total_score > max_score:
+                                max_score = total_score
+                                best_molecule_score = molecule_score  # Store molecule score without word count
                                 best_smiles = smiles
                 
                 except Exception as e:
                     print(f"Error processing molecule {smiles}: {str(e)}")
                     continue
         
-        # Add word count reward to the final score
-        max_score += word_count_reward
-        
-        # Record if we have a new best score
-        if max_score > current_record and best_smiles is not None:
+        # Record if we have a new best molecule score (without word count reward)
+        if best_molecule_score > current_record and best_smiles is not None:
             try:
                 with open(record_file, 'a') as f:
-                    f.write(f"{best_smiles},{max_score}\n")
-                current_record = max_score
+                    f.write(f"{best_smiles},{best_molecule_score}\n")
+                current_record = best_molecule_score
             except Exception as e:
                 print(f"Failed to write to records file: {str(e)}")
         
+        # For RL training reward, we still use the total score including word count
         rewards.append(max(max_score, 0))
     
     rewards = torch.tensor(rewards, dtype=torch.float32)
