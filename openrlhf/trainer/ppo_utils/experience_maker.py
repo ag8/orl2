@@ -326,13 +326,6 @@ class NaiveExperienceMaker(ABC):
             # remote RM
             queries = self.tokenizer.batch_decode(sequences.cpu(), skip_special_tokens=False)
 
-            # EXTREME DEBUG: Add a marker to the queries to see if they're being modified
-            print(f"EXPERIENCE_MAKER_DEBUG: Adding EXPERIENCE_MAKER_POTATO marker to {len(queries)} queries")
-            for i in range(len(queries)):
-                queries[i] = "EXPERIENCE_MAKER_POTATO_START " + queries[i] + " EXPERIENCE_MAKER_POTATO_END"
-                if i < 3:  # Print the first few queries for debugging
-                    print(f"EXPERIENCE_MAKER_DEBUG: Modified query {i}: {queries[i][:100]}...")
-
             if self.custom_reward_func:
                 r = self.custom_reward_func(queries, samples.prompts, samples.labels).to(
                     device=action_log_probs.device
@@ -633,13 +626,6 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
                     sequences_list.append(tokens_list[offset : offset + length])
                     offset += length
                 queries = self.tokenizer.batch_decode(sequences_list, skip_special_tokens=False)
-
-            # EXTREME DEBUG: Add a marker to the queries to see if they're being modified
-            print(f"REMOTE_EXPERIENCE_MAKER_DEBUG: Adding REMOTE_EXPERIENCE_MAKER_POTATO marker to {len(queries)} queries")
-            for i in range(len(queries)):
-                queries[i] = "REMOTE_EXPERIENCE_MAKER_POTATO_START " + queries[i] + " REMOTE_EXPERIENCE_MAKER_POTATO_END"
-                if i < 3:  # Print the first few queries for debugging
-                    print(f"REMOTE_EXPERIENCE_MAKER_DEBUG: Modified query {i}: {queries[i][:100]}...")
 
             if self.custom_reward_func:
                 r = self.custom_reward_func.remote(queries, samples.prompts, samples.labels)
