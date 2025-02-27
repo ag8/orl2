@@ -8,7 +8,79 @@ from contextlib import contextmanager
 from vina import Vina
 from rdkit import RDLogger
 from meeko import MoleculePreparation
+import time
+import threading
+import queue
 RDLogger.DisableLog('rdApp.*')
+
+# Global prompt buffer and lock for thread safety
+_PROMPT_BUFFER = []
+_PROMPT_BUFFER_LOCK = threading.Lock()
+_PROMPT_BUFFER_MAX_SIZE = 100  # Flush after this many prompts
+_PROMPT_LOG_FILE = "prompt_history.log"
+_PROMPT_WRITER_THREAD = None
+_PROMPT_QUEUE = queue.Queue()
+_SHUTDOWN_EVENT = threading.Event()
+
+def _prompt_writer_worker():
+    """Background thread that writes prompts to the log file."""
+    while not _SHUTDOWN_EVENT.is_set() or not _PROMPT_QUEUE.empty():
+        try:
+            # Wait for items with a timeout to allow checking the shutdown event
+            batch = _PROMPT_QUEUE.get(timeout=1.0)
+            if batch:
+                with open(_PROMPT_LOG_FILE, 'a', encoding='utf-8') as f:
+                    for prompt_data in batch:
+                        timestamp, prompt_id, prompt, response = prompt_data
+                        f.write(f"\n{'='*80}\n")
+                        f.write(f"PROMPT ID: {prompt_id} | TIMESTAMP: {timestamp}\n")
+                        f.write(f"{'-'*80}\n")
+                        f.write(f"PROMPT:\n{prompt}\n")
+                        f.write(f"{'-'*80}\n")
+                        f.write(f"RESPONSE:\n{response}\n")
+                        f.write(f"{'='*80}\n\n")
+            _PROMPT_QUEUE.task_done()
+        except queue.Empty:
+            # No items in queue, just continue and check shutdown event
+            continue
+        except Exception as e:
+            print(f"Error in prompt writer thread: {str(e)}")
+
+def _ensure_writer_thread():
+    """Ensure the background writer thread is running."""
+    global _PROMPT_WRITER_THREAD
+    if _PROMPT_WRITER_THREAD is None or not _PROMPT_WRITER_THREAD.is_alive():
+        _SHUTDOWN_EVENT.clear()
+        _PROMPT_WRITER_THREAD = threading.Thread(target=_prompt_writer_worker, daemon=True)
+        _PROMPT_WRITER_THREAD.start()
+
+def _buffer_prompt(prompt_id, prompt, response):
+    """Add a prompt to the buffer and flush if needed."""
+    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    with _PROMPT_BUFFER_LOCK:
+        _PROMPT_BUFFER.append((timestamp, prompt_id, prompt, response))
+        if len(_PROMPT_BUFFER) >= _PROMPT_BUFFER_MAX_SIZE:
+            _flush_prompt_buffer()
+
+def _flush_prompt_buffer():
+    """Flush the prompt buffer to the log file."""
+    global _PROMPT_BUFFER
+    with _PROMPT_BUFFER_LOCK:
+        if _PROMPT_BUFFER:
+            _ensure_writer_thread()
+            _PROMPT_QUEUE.put(list(_PROMPT_BUFFER))
+            _PROMPT_BUFFER = []
+
+def shutdown_prompt_logger():
+    """Shutdown the prompt logger, flushing any remaining prompts."""
+    _flush_prompt_buffer()
+    _SHUTDOWN_EVENT.set()
+    if _PROMPT_WRITER_THREAD and _PROMPT_WRITER_THREAD.is_alive():
+        _PROMPT_WRITER_THREAD.join(timeout=5.0)
+
+# Register shutdown function to be called at exit
+import atexit
+atexit.register(shutdown_prompt_logger)
 
 
 class SuppressLibraryOutput:
@@ -122,11 +194,12 @@ def extract_solution(solution_str):
     elif "<|im_start|>assistant" in solution_str:
         solution_str = solution_str.split("<|im_start|>assistant", 1)[1]
     
+    # Use re.DOTALL to match across newlines
     answer_pattern = r'<answer>(.*?)</answer>'
-    match = re.finditer(answer_pattern, solution_str)
-    matches = list(match)
+    matches = list(re.finditer(answer_pattern, solution_str, re.DOTALL))
     if matches:
         final_answer = matches[-1].group(1).strip()
+        # Split by commas and strip each SMILES string
         return [s.strip() for s in final_answer.split(',') if s.strip()]
     return []
 
@@ -145,8 +218,13 @@ def reward_func(queries, prompts, labels=None):
     except (FileNotFoundError, IndexError, ValueError):
         current_record = float('-inf')
     
-    for query, prompt in zip(queries, prompts):
+    for i, (query, prompt) in enumerate(zip(queries, prompts)):
         response = query[len(prompt):]
+        
+        # Log the prompt and response to our buffer
+        prompt_id = f"{time.time():.0f}_{i}"
+        _buffer_prompt(prompt_id, prompt, response)
+        
         smiles_strings = extract_solution(response)
         
         max_score = 0.0
