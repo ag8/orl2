@@ -515,6 +515,7 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
         super().__init__(*args, **kwargs)
         self.vllm_engines = vllm_engines
         self.packing_samples = packing_samples
+        self.best_examples = []
 
         if self.custom_reward_func:
             self.custom_reward_func = ray.remote(self.custom_reward_func)
@@ -530,6 +531,10 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
                 "wait_time": 0,
             }
         experiences = super().make_experience_list(all_prompts, all_labels, **generate_kwargs)
+        
+        # Track best examples based on rewards
+        self.update_best_examples(experiences, all_prompts)
+        
         if self.critic is not None:
             for experience in experiences:
                 # send experience to critic
@@ -537,6 +542,63 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
                 experience_cpu.to_device("cpu")
                 self._ref = self.critic.append.remote(experience_cpu)
         return experiences
+    
+    def update_best_examples(self, experiences, all_prompts):
+        """
+        Update the best examples based on rewards.
+        Keep track of the top 3 examples with highest rewards.
+        """
+        # Skip if we don't have experiences yet
+        if not experiences:
+            return
+            
+        # Extract rewards and corresponding prompts/responses
+        for i, experience in enumerate(experiences):
+            rewards = experience.info["reward"].cpu().tolist()
+            
+            # Get the corresponding prompts and responses
+            if not self.packing_samples:
+                sequences = experience.sequences.cpu()
+                action_mask = experience.action_mask.cpu() if experience.action_mask is not None else None
+                
+                for j, reward in enumerate(rewards):
+                    # Get the prompt and response
+                    prompt_idx = i * self.strategy.args.micro_rollout_batch_size + j
+                    if prompt_idx >= len(all_prompts):
+                        continue
+                        
+                    prompt = all_prompts[prompt_idx]
+                    
+                    # Extract only the response part using action_mask
+                    if action_mask is not None:
+                        # Get the indices where action_mask is True (the response part)
+                        response_indices = action_mask[j].nonzero(as_tuple=True)[0]
+                        if len(response_indices) > 0:
+                            response_tokens = sequences[j][response_indices]
+                            response = self.tokenizer.decode(response_tokens, skip_special_tokens=False)
+                        else:
+                            # Fallback if action_mask doesn't have any True values
+                            response = self.tokenizer.decode(sequences[j], skip_special_tokens=False)
+                    else:
+                        # Fallback if action_mask is None
+                        response = self.tokenizer.decode(sequences[j], skip_special_tokens=False)
+                    
+                    # Add to best examples
+                    self.best_examples.append({
+                        "prompt": prompt,
+                        "response": response,
+                        "reward": reward
+                    })
+        
+        # Sort by reward and keep top 3
+        self.best_examples = sorted(self.best_examples, key=lambda x: x["reward"], reverse=True)[:3]
+        
+        if self.strategy.is_rank_0() and len(self.best_examples) > 0:
+            logger.info(f"Best examples updated. Top reward: {self.best_examples[0]['reward']}")
+            for i, example in enumerate(self.best_examples):
+                logger.info(f"Example {i+1} (reward: {example['reward']:.4f}):")
+                logger.info(f"Prompt: {example['prompt'][:100]}...")
+                logger.info(f"Response: {example['response'][:100]}...")
 
     @torch.no_grad()
     def generate_samples(self, all_prompts: List[str], all_labels, **generate_kwargs) -> List[Samples]:
@@ -546,6 +608,10 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
         When not using vllm, we will fallback to the default implementation,
         in which actor will be used to generate samples.
         """
+        # Add few-shot examples to prompts if we have any
+        if len(self.best_examples) > 0:
+            all_prompts = self.add_few_shot_examples(all_prompts)
+            
         if self.vllm_engines is None:
             return super().generate_samples(all_prompts, all_labels, **generate_kwargs)
 
@@ -560,6 +626,43 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
                     refs.append(engine.sleep.remote())
                 ray.get(refs)
         return samples
+        
+    def add_few_shot_examples(self, prompts: List[str]) -> List[str]:
+        """
+        Add the best 3 examples as few-shot examples to each prompt.
+        Format them with proper im_start and im_end tags.
+        """
+        if not self.best_examples:
+            return prompts
+            
+        augmented_prompts = []
+        for prompt in prompts:
+            # Create few-shot examples with proper im_start and im_end tags
+            few_shot_context = ""
+            for example in self.best_examples:
+                # Extract user message from the prompt
+                user_message = example["prompt"]
+                user_message = user_message.split("<|im_start|>user")[1].split("<|im_end|>")[0].strip()
+                
+                # Extract assistant response, removing any system or user messages that might be in it
+                assistant_response = example["response"]
+                assistant_response = assistant_response.split("<|im_start|>assistant")[1].split("<|im_end|>")[0].strip()
+                
+                # Add user message with im_start and im_end tags
+                few_shot_context += f"<|im_start|>user\n{user_message}<|im_end|>\n"
+                # Add assistant response with im_start and im_end tags
+                few_shot_context += f"<|im_start|>assistant\n{assistant_response}<|im_end|>\n"
+            
+
+            # Insert our examples before the first user message
+            parts = prompt.split("<|im_start|>user", 1)
+            augmented_prompts.append(parts[0] + few_shot_context + "<|im_start|>user" + parts[1])
+
+            
+        if self.strategy.is_rank_0():
+            logger.info(f"Added {len(self.best_examples)} few-shot examples to each prompt")
+            
+        return augmented_prompts
 
     @torch.no_grad()
     def make_experience(self, samples: Samples) -> Experience:
