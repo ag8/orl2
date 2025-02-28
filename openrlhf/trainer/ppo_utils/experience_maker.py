@@ -340,6 +340,7 @@ class NaiveExperienceMaker(ABC):
         if self.remote_rm_url is not None:
             # remote RM
             queries = self.tokenizer.batch_decode(sequences.cpu(), skip_special_tokens=False)
+
             if self.custom_reward_func:
                 r = self.custom_reward_func(queries, samples.prompts, samples.labels).to(
                     device=action_log_probs.device

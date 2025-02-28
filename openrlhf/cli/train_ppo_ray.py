@@ -46,7 +46,13 @@ def _validate_args(args):
 def train(args):
     _validate_args(args)
 
-    # configure strategy
+    # Import the appropriate VLLM engine based on tool use setting
+    if args.enable_tool_use:
+        from openrlhf.trainer.ray.tool_use.vllm_tool_engine import create_tool_vllm_engines
+    else:
+        from openrlhf.trainer.ray import create_vllm_engines
+
+    # Set up strategy
     strategy = get_strategy(args)
 
     # if colocated, create placement group for actor and ref model explicitly.
@@ -79,19 +85,38 @@ def train(args):
                 f"and {args.vllm_num_engines * args.vllm_tensor_parallel_size}"
             )
 
-        vllm_engines = create_vllm_engines(
-            args.vllm_num_engines,
-            args.vllm_tensor_parallel_size,
-            args.pretrain,
-            args.seed,
-            args.enable_prefix_caching,
-            args.enforce_eager,
-            max_len,
-            args.actor_num_nodes * args.actor_num_gpus_per_node,
-            pg if args.colocate_all_models else None,
-            args.vllm_gpu_memory_utilization,
-            args.vllm_enable_sleep,
-        )
+        if args.enable_tool_use:
+            vllm_engines = create_tool_vllm_engines(
+                num_engines=args.vllm_num_engines,
+                tensor_parallel_size=args.vllm_tensor_parallel_size,
+                pretrain=args.pretrain,
+                seed=args.seed,
+                enable_prefix_caching=args.enable_prefix_caching,
+                enforce_eager=args.enforce_eager,
+                max_model_len=max_len,
+                num_total_actors=args.actor_num_nodes * args.actor_num_gpus_per_node,
+                shared_pg=pg if args.colocate_all_models else None,
+                gpu_memory_utilization=args.vllm_gpu_memory_utilization,
+                vllm_enable_sleep=args.vllm_enable_sleep,
+                tool_use_enabled=args.enable_tool_use,
+                num_tool_executors=args.num_tool_executors,
+                max_output_length=args.tool_max_output_length if hasattr(args, 'tool_max_output_length') else 10000,
+                timeout_seconds=args.tool_timeout_seconds if hasattr(args, 'tool_timeout_seconds') else 30,
+            )
+        else:
+            vllm_engines = create_vllm_engines(
+                num_engines=args.vllm_num_engines,
+                tensor_parallel_size=args.vllm_tensor_parallel_size,
+                pretrain=args.pretrain,
+                seed=args.seed,
+                enable_prefix_caching=args.enable_prefix_caching,
+                enforce_eager=args.enforce_eager,
+                max_model_len=max_len,
+                num_total_actors=args.actor_num_nodes * args.actor_num_gpus_per_node,
+                shared_pg=pg if args.colocate_all_models else None,
+                gpu_memory_utilization=args.vllm_gpu_memory_utilization,
+                vllm_enable_sleep=args.vllm_enable_sleep,
+            )
 
     actor_model = PPORayActorGroup(
         args.actor_num_nodes,
@@ -401,6 +426,12 @@ if __name__ == "__main__":
 
     # ModelScope parameters
     parser.add_argument("--use_ms", action="store_true", default=False)
+
+    # Tool use parameters
+    parser.add_argument("--enable_tool_use", action="store_true", default=False, help="Enable tool use capabilities")
+    parser.add_argument("--num_tool_executors", type=int, default=32, help="Number of parallel tool executors")
+    parser.add_argument("--tool_max_output_length", type=int, default=10000, help="Maximum length of captured output from tool execution")
+    parser.add_argument("--tool_timeout_seconds", type=int, default=30, help="Maximum execution time in seconds for tool execution")
 
     args = parser.parse_args()
 
