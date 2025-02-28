@@ -438,11 +438,113 @@ class ToolLLMRayActor:
             self.actor_counter = 0
             self.requests = {}
 
+    def _append_final_prompt_and_generate(self, responses, sampling_params):
+        """
+        Append a final prompt to each response and generate additional tokens.
+        
+        Args:
+            responses: List of LLM responses
+            sampling_params: Sampling parameters for generation
+            
+        Returns:
+            Updated responses with final prompt and additional generation
+        """
+        try:
+            print(f"TOOL_DEBUG: Appending final prompt and generating additional tokens for {len(responses)} responses")
+            
+            # Prepare prompts for final generation
+            final_prompts = []
+            final_indices = []
+            
+            for idx, response in enumerate(responses):
+                try:
+                    # Get the current text
+                    current_text = response.outputs[0].text
+                    
+                    # Append the final prompt
+                    final_prompt = current_text + "\n<|im_end|>\n<|im_start|>user\nGreat. Can you just give me your final answer again, inside of <answer></answer> tags?\n<|im_end|>\n<|im_start|>assistant\nSure; based on the above, my final answer is <answer>\n"
+                    
+                    # Tokenize the final prompt
+                    tokens = self.llm.llm_engine.tokenizer.encode(final_prompt)
+                    
+                    final_prompts.append(tokens)
+                    final_indices.append(idx)
+                    print(f"TOOL_DEBUG: Created final prompt for response {idx}, token length: {len(tokens)}")
+                except Exception as e:
+                    print(f"TOOL_DEBUG: Error creating final prompt for response {idx}: {str(e)}")
+            
+            if not final_prompts:
+                print("TOOL_DEBUG: No final prompts created, skipping final generation")
+                return responses
+            
+            # Create a new sampling_params object with a fixed max_tokens value for final generation
+            from copy import deepcopy
+            
+            # Clone the original sampling params
+            final_sampling_params = sampling_params.clone()
+            
+            # Set a fixed max_tokens value for final generation (100 tokens)
+            final_sampling_params.max_tokens = 100
+            
+            # Set a minimum number of tokens to generate
+            final_sampling_params.min_tokens = 10
+            
+            print(f"TOOL_DEBUG: Final sampling parameters: {final_sampling_params}")
+                
+            # Generate final responses in batch with the new sampling params
+            print(f"TOOL_DEBUG: Generating final answers for {len(final_prompts)} responses")
+            final_responses = self.llm.generate(
+                sampling_params=final_sampling_params,
+                prompt_token_ids=final_prompts
+            )
+            
+            # Update responses with final answers
+            for i, idx in enumerate(final_indices):
+                try:
+                    # Get the original text
+                    original_text = responses[idx].outputs[0].text
+                    
+                    # Get the final generation
+                    final_generation = final_responses[i].outputs[0].text
+                    
+                    print(f"TOOL_DEBUG: Response {idx} - Got final generation of length {len(final_generation)}")
+                    print(f"TOOL_DEBUG: Response {idx} - Final generation preview: {final_generation[:100]}...")
+                    
+                    # Create the final text with the original text and the final prompt + generation
+                    final_text = original_text + "\n<|im_end|>\n<|im_start|>user\nGreat. Can you just give me your final answer again, inside of <answer></answer> tags?\n<|im_end|>\n<|im_start|>assistant\nSure; based on the above, my final answer is <answer>\n" + final_generation
+                    
+                    # Update the response and its token IDs
+                    original_token_ids = responses[idx].outputs[0].token_ids
+                    responses[idx].outputs[0].text = final_text
+                    responses[idx].outputs[0].token_ids = self._update_token_ids(
+                        responses[idx], final_text, original_token_ids
+                    )
+                    
+                    # Log the final text length
+                    print(f"TOOL_DEBUG: Response {idx} - Final text length: {len(final_text)}")
+                    print(f"TOOL_DEBUG: Response {idx} - Updated with final answer")
+                except Exception as e:
+                    print(f"TOOL_DEBUG: Error processing final generation for response {idx}: {str(e)}")
+                
+        except Exception as e:
+            print(f"TOOL_DEBUG: Error in final generation: {str(e)}")
+            import traceback
+            print(f"TOOL_DEBUG: {traceback.format_exc()}")
+            
+        return responses
+
     def get_responses(self, actor_rank):
         """
         Return the responses for the actor with the given rank
         """
         responses = self.responses.pop(actor_rank)
+        
+        # If tool use is enabled, append the final prompt and generate additional tokens
+        if self.tool_use_enabled and self.tool_executors:
+            # Use a default sampling params object for the final generation
+            from vllm import SamplingParams
+            default_sampling_params = SamplingParams(temperature=0.7, max_tokens=100)
+            responses = self._append_final_prompt_and_generate(responses, default_sampling_params)
         
         # Verify that both text and token IDs are properly set for each response
         for i, response in enumerate(responses):
