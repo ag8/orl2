@@ -13,7 +13,7 @@ import tempfile
 import os
 import signal
 from contextlib import redirect_stdout, redirect_stderr
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, List, Optional, Any, Tuple, Set
 
 from openrlhf.utils.logging_utils import init_logger
 
@@ -44,14 +44,16 @@ class ToolExecutor:
         self.max_output_length = max_output_length
         self.timeout_seconds = timeout_seconds
         self.max_executions = max_executions
+        self.temp_file_path = None
         logger.info(f"Initialized ToolExecutor with max_output_length: {max_output_length}, timeout: {timeout_seconds}s, max_executions: {max_executions}")
     
-    def extract_python_blocks(self, text: str) -> List[Dict[str, Any]]:
+    def extract_python_blocks(self, text: str, exclude_positions: Set[Tuple[int, int]] = None) -> List[Dict[str, Any]]:
         """
         Extract Python code blocks from text.
         
         Args:
             text: The text to extract code blocks from.
+            exclude_positions: Set of (start, end) positions to exclude from extraction.
             
         Returns:
             A list of dictionaries, each containing:
@@ -61,32 +63,44 @@ class ToolExecutor:
         """
         pattern = r"<PYTHON>(.*?)</PYTHON>"
         blocks = []
+        exclude_positions = exclude_positions or set()
         
         for match in re.finditer(pattern, text, re.DOTALL):
+            start_idx = match.start()
+            end_idx = match.end()
+            
+            # Skip this block if it's in the exclude list
+            if any(start == start_idx and end == end_idx for start, end in exclude_positions):
+                continue
+                
             blocks.append({
-                "start": match.start(),
-                "end": match.end(),
+                "start": start_idx,
+                "end": end_idx,
                 "code": match.group(1).strip()
             })
         
         return blocks
     
-    def execute_code(self, code: str) -> str:
+    def execute_code(self, code: str, is_first_execution: bool = False) -> str:
         """
         Execute Python code in an isolated subprocess and capture the output.
         
         Args:
             code: The Python code to execute.
+            is_first_execution: Whether this is the first execution in a sequence.
             
         Returns:
             The captured output (stdout + stderr).
         """
         print(f"TOOL_DEBUG: Executing Python code: {code[:100]}..." if len(code) > 100 else f"TOOL_DEBUG: Executing Python code: {code}")
         
-        # Create a temporary file to hold the code
-        with tempfile.NamedTemporaryFile(suffix='.py', mode='w', delete=False) as temp_file:
-            # Write a wrapper that captures all output
-            temp_file.write("""
+        # For the first execution, create a new temp file
+        # For subsequent executions, append to the existing file to maintain state
+        if is_first_execution or self.temp_file_path is None:
+            # Create a temporary file to hold the code
+            with tempfile.NamedTemporaryFile(suffix='.py', mode='w', delete=False) as temp_file:
+                # Write a wrapper that captures all output
+                temp_file.write("""
 import sys
 import traceback
 
@@ -113,12 +127,12 @@ sys.stderr = stderr_capture
 try:
     # Execute the user code
 """)
-            # Indent the user code
-            indented_code = "\n".join(f"    {line}" for line in code.split("\n"))
-            temp_file.write(indented_code)
-            
-            # Add code to print the captured output
-            temp_file.write("""
+                # Indent the user code
+                indented_code = "\n".join(f"    {line}" for line in code.split("\n"))
+                temp_file.write(indented_code)
+                
+                # Add code to print the captured output
+                temp_file.write("""
     
     # Print the captured output
     output = stdout_capture.value
@@ -143,12 +157,47 @@ except Exception as e:
     
     print(error_output, end='')
 """)
-            temp_file_path = temp_file.name
+                self.temp_file_path = temp_file.name
+        else:
+            # For subsequent executions, append to the existing file to maintain state
+            with open(self.temp_file_path, 'a') as temp_file:
+                temp_file.write("\n\n# New execution\n")
+                temp_file.write("try:\n")
+                # Indent the user code
+                indented_code = "\n".join(f"    {line}" for line in code.split("\n"))
+                temp_file.write(indented_code)
+                
+                # Add code to print the captured output
+                temp_file.write("""
+    
+    # Print the captured output
+    output = stdout_capture.value
+    
+    # If there's no stdout but there is stderr, use stderr
+    if not output and stderr_capture.value:
+        output = stderr_capture.value
+    
+    # Restore original stdout and stderr
+    sys.stdout = original_stdout
+    sys.stderr = original_stderr
+    
+    print(output, end='')
+    
+except Exception as e:
+    # Capture the exception
+    error_output = f"Error: {str(e)}\\n{traceback.format_exc()}"
+    
+    # Restore original stdout and stderr
+    sys.stdout = original_stdout
+    sys.stderr = original_stderr
+    
+    print(error_output, end='')
+""")
         
         try:
             # Execute the code in a separate process with timeout
             result = subprocess.run(
-                [sys.executable, temp_file_path],
+                [sys.executable, self.temp_file_path],
                 capture_output=True,
                 text=True,
                 timeout=self.timeout_seconds
@@ -165,12 +214,6 @@ except Exception as e:
             output = f"Error: Code execution timed out after {self.timeout_seconds} seconds."
         except Exception as e:
             output = f"Error in subprocess execution: {str(e)}"
-        finally:
-            # Clean up the temporary file
-            try:
-                os.unlink(temp_file_path)
-            except:
-                pass
         
         # Truncate if too long
         if len(output) > self.max_output_length:
@@ -190,75 +233,81 @@ except Exception as e:
         Returns:
             The processed text with code outputs injected.
         """
-        return self.process_text_recursive(text, 0)
-    
-    def process_text_recursive(self, text: str, execution_count: int) -> str:
-        """
-        Recursively process text by executing Python code blocks and injecting the output,
-        up to the maximum number of executions.
+        # Reset the temp file path for a new processing session
+        self.temp_file_path = None
         
-        Args:
-            text: The text to process.
-            execution_count: The current number of executions performed.
+        # Track which blocks have been processed
+        processed_blocks = set()
+        
+        # Track the number of executions performed
+        executions_performed = 0
+        
+        # Process the text
+        result_text = text
+        
+        # Continue processing until we've reached the maximum number of executions
+        # or there are no more blocks to process
+        while executions_performed < self.max_executions:
+            # Extract code blocks, excluding those we've already processed
+            blocks = self.extract_python_blocks(result_text, processed_blocks)
             
-        Returns:
-            The processed text with code outputs injected.
-        """
-        # Check if we've reached the maximum number of executions
-        if execution_count >= self.max_executions:
-            logger.info(f"Reached maximum number of Python executions ({self.max_executions}). Stopping.")
-            return text
-        
-        # Extract code blocks
-        blocks = self.extract_python_blocks(text)
-        
-        # If no blocks, return the original text
-        if not blocks:
-            print(f"TOOL_DEBUG: No Python blocks found in text: {text[:100]}...")
-            return text
-        
-        print(f"TOOL_DEBUG: Found {len(blocks)} Python blocks in text (execution {execution_count + 1}/{self.max_executions})")
-        
-        # Process blocks in reverse order to avoid messing up indices
-        blocks.reverse()
-        
-        # Process each block
-        for block in blocks:
+            # If no blocks, break the loop
+            if not blocks:
+                print(f"TOOL_DEBUG: No new Python blocks found in text. Stopping after {executions_performed} executions.")
+                break
+            
+            # Process the last block
+            block = blocks[-1]  # Take only the last block
             start_idx = block["start"]
             end_idx = block["end"]
             code = block["code"]
             
-            print(f"TOOL_DEBUG: Processing block at positions {start_idx}-{end_idx}")
+            print(f"TOOL_DEBUG: Processing block at positions {start_idx}-{end_idx} (execution {executions_performed + 1}/{self.max_executions})")
             
-            # Execute the code
-            output = self.execute_code(code)
+            # Mark this block as processed
+            processed_blocks.add((start_idx, end_idx))
+            
+            # Execute the code, marking the first execution in the sequence
+            is_first = (executions_performed == 0)
+            output = self.execute_code(code, is_first_execution=is_first)
             
             # Insert the output after the code block
-            text = (
-                text[:end_idx] + 
+            result_text = (
+                result_text[:end_idx] + 
                 "\n<PYTHON-OUTPUT>\n" + output + "\n</PYTHON-OUTPUT>" + 
-                text[end_idx:]
+                result_text[end_idx:]
             )
             
             print(f"TOOL_DEBUG: Inserted <PYTHON-OUTPUT> tag after position {end_idx}")
+            
+            # Increment the execution count
+            executions_performed += 1
+            
+            # Log the processed text to help with debugging
+            print(f"TOOL_DEBUG: Processed text with 1 Python block. Executions performed: {executions_performed}/{self.max_executions}")
         
-        # Log the processed text to help with debugging
-        print(f"TOOL_DEBUG: Processed text with {len(blocks)} Python blocks. First 100 chars: {text[:100]}...")
-        print(f"TOOL_DEBUG: Does processed text contain <PYTHON-OUTPUT> tags? {'Yes' if '<PYTHON-OUTPUT>' in text else 'No'}")
+        # If we've reached the maximum number of executions and there are still more blocks,
+        # add a warning message
+        if executions_performed >= self.max_executions:
+            # Check if there are more blocks to process
+            more_blocks = self.extract_python_blocks(result_text, processed_blocks)
+            if more_blocks:
+                logger.info(f"Reached maximum number of Python executions ({self.max_executions}). Adding warning message.")
+                
+                # Add warning message after the last Python output
+                last_python_output_end = result_text.rfind("</PYTHON-OUTPUT>")
+                if last_python_output_end != -1:
+                    last_python_output_end += len("</PYTHON-OUTPUT>")
+                    warning_message = "\n\n[WARNING: You have reached your Python execution quota. No further Python code will be executed.]\n\nAll right,"
+                    result_text = result_text[:last_python_output_end] + warning_message + result_text[last_python_output_end:]
+                    print(f"TOOL_DEBUG: Added warning message about reaching Python execution quota.")
         
-        # Check if there are more Python blocks to process
-        more_blocks = self.extract_python_blocks(text)
-        if more_blocks and execution_count + 1 < self.max_executions:
-            print(f"TOOL_DEBUG: Found more Python blocks after execution. Recursively processing (execution {execution_count + 1}/{self.max_executions}).")
-            return self.process_text_recursive(text, execution_count + 1)
-        elif more_blocks and execution_count + 1 >= self.max_executions:
-            # We've reached the maximum number of executions and there are still more blocks
-            # Add a warning message after the last processed block
-            last_python_output_end = text.rfind("</PYTHON-OUTPUT>")
-            if last_python_output_end != -1:
-                last_python_output_end += len("</PYTHON-OUTPUT>")
-                warning_message = "\n\n[WARNING: You have reached your Python execution quota. No further Python code will be executed.]\n\nAll right,"
-                text = text[:last_python_output_end] + warning_message + text[last_python_output_end:]
-                print(f"TOOL_DEBUG: Added warning message about reaching Python execution quota.")
+        # Clean up temp file if it exists
+        if self.temp_file_path and os.path.exists(self.temp_file_path):
+            try:
+                os.unlink(self.temp_file_path)
+                self.temp_file_path = None
+            except:
+                pass
         
-        return text 
+        return result_text 

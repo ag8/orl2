@@ -173,8 +173,8 @@ ray job submit --address="http://127.0.0.1:8265" \
 --vllm_tensor_parallel_size 1 \
 --colocate_critic_reward \
 --colocate_actor_ref \
---pretrain Qwen/Qwen2.5-14B-Instruct \
---save_path /root/orl2/openrlhf/examples/checkpoint/qwen14btoolusereal \
+--pretrain Qwen/Qwen2.5-7B-Instruct \
+--save_path /root/orl2/openrlhf/examples/checkpoint/qwen7btoolusereal2 \
 --save_steps 10 \
 --micro_train_batch_size 4 \
 --train_batch_size 64 \
