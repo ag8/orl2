@@ -23,14 +23,17 @@ class PromptLogger:
         self.buffer = []
         self.buffer_size = _PROMPT_BUFFER_SIZE
     
-    def add_prompt(self, prompt_id, prompt, response):
+    def add_prompt(self, prompt_id, prompt, response, reward=None, best_smiles=None, molecule_score=None):
         """Add a prompt to the buffer and flush if needed."""
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
         self.buffer.append({
             "timestamp": timestamp,
             "prompt_id": prompt_id,
             "prompt": prompt,
-            "response": response
+            "response": response,
+            "reward": reward,
+            "best_smiles": best_smiles,
+            "molecule_score": molecule_score
         })
         
         if len(self.buffer) >= self.buffer_size:
@@ -47,7 +50,17 @@ class PromptLogger:
                 for entry in self.buffer:
                     # Write as JSON line with delimiter for readability
                     f.write("\n" + "="*80 + "\n")
-                    f.write(f"PROMPT ID: {entry['prompt_id']} | TIMESTAMP: {entry['timestamp']}\n")
+                    
+                    # Add reward information prominently at the top
+                    reward_info = ""
+                    if entry['reward'] is not None:
+                        reward_info = f" | REWARD: {entry['reward']:.4f}"
+                        if entry['best_smiles'] is not None:
+                            reward_info += f" | BEST SMILES: {entry['best_smiles']}"
+                        if entry['molecule_score'] is not None:
+                            reward_info += f" | MOLECULE SCORE: {entry['molecule_score']:.4f}"
+                    
+                    f.write(f"PROMPT ID: {entry['prompt_id']} | TIMESTAMP: {entry['timestamp']}{reward_info}\n")
                     f.write("-"*80 + "\n")
                     f.write(f"PROMPT:\n{entry['prompt']}\n")
                     f.write("-"*80 + "\n")
@@ -204,9 +217,8 @@ def reward_func(queries, prompts, labels=None):
     for i, (query, prompt) in enumerate(zip(queries, prompts)):
         response = query[len(prompt):]
         
-        # Log the prompt and response to our buffer
+        # Log the prompt and response to our buffer - we'll update with reward later
         prompt_id = f"{int(time.time())}_{i}"
-        prompt_logger.add_prompt(prompt_id, prompt, response)
         
         smiles_strings = extract_solution(response)
         
@@ -254,7 +266,18 @@ def reward_func(queries, prompts, labels=None):
                 print(f"Failed to write to records file: {str(e)}")
         
         # For RL training reward, we still use the total score including word count
-        rewards.append(max(max_score, 0))
+        reward_value = max(max_score, 0)
+        rewards.append(reward_value)
+        
+        # Now log the prompt with the calculated reward
+        prompt_logger.add_prompt(
+            prompt_id=prompt_id, 
+            prompt=prompt, 
+            response=response,
+            reward=reward_value,
+            best_smiles=best_smiles,
+            molecule_score=best_molecule_score if best_molecule_score > 0 else None
+        )
     
     # Make sure to flush any remaining prompts before returning
     prompt_logger.flush()
