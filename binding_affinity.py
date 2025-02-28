@@ -3,7 +3,7 @@
 import sys
 import os
 from rdkit import Chem
-from orl2.smiles_rewarder import calculate_binding_affinity, SuppressLibraryOutput
+from smiles_rewarder import calculate_binding_affinity, SuppressLibraryOutput
 
 def main():
     # Check if a SMILES string was provided
