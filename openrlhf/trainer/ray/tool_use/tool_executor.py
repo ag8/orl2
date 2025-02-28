@@ -212,8 +212,12 @@ except Exception as e:
                 
         except subprocess.TimeoutExpired:
             output = f"Error: Code execution timed out after {self.timeout_seconds} seconds."
+            # Clear the temp file on timeout error
+            self._clear_temp_file()
         except Exception as e:
             output = f"Error in subprocess execution: {str(e)}"
+            # Clear the temp file on execution error
+            self._clear_temp_file()
         
         # Truncate if too long
         if len(output) > self.max_output_length:
@@ -221,7 +225,26 @@ except Exception as e:
         
         print(f"TOOL_DEBUG: Code execution output: {output[:100]}..." if len(output) > 100 else f"TOOL_DEBUG: Code execution output: {output}")
         
+        # Check if the output contains an error message
+        if output.startswith("Error:") or "Traceback (most recent call last)" in output:
+            print(f"TOOL_DEBUG: Error detected in code execution. Clearing temporary file.")
+            self._clear_temp_file()
+        
         return output
+    
+    def _clear_temp_file(self):
+        """
+        Clear the temporary file and reset the path.
+        This is called when an error occurs during code execution.
+        """
+        if self.temp_file_path and os.path.exists(self.temp_file_path):
+            try:
+                os.unlink(self.temp_file_path)
+                print(f"TOOL_DEBUG: Deleted temporary file {self.temp_file_path} due to error")
+            except Exception as e:
+                print(f"TOOL_DEBUG: Failed to delete temporary file: {str(e)}")
+            finally:
+                self.temp_file_path = None
     
     def process_text(self, text: str) -> str:
         """

@@ -207,3 +207,57 @@ ray job submit --address="http://127.0.0.1:8265" \
 --lora_rank 64 \
 --lora_alpha 128
 ```
+
+### 8. Lower Batch Size Configuration (for OOM issues)
+
+If you're experiencing out-of-memory (OOM) errors, use this configuration with reduced batch sizes:
+
+```
+ray job submit --address="http://127.0.0.1:8265" \
+-- python3 -m openrlhf.cli.train_ppo_ray \
+--ref_num_nodes 1 \
+--ref_num_gpus_per_node 1 \
+--reward_num_nodes 1 \
+--reward_num_gpus_per_node 1 \
+--critic_num_nodes 1 \
+--critic_num_gpus_per_node 1 \
+--actor_num_nodes 1 \
+--actor_num_gpus_per_node 1 \
+--vllm_num_engines 1 \
+--vllm_tensor_parallel_size 1 \
+--colocate_critic_reward \
+--colocate_actor_ref \
+--pretrain Qwen/Qwen2.5-7B-Instruct \
+--save_path /root/orl2/openrlhf/examples/checkpoint/qwen7btoolusereal2 \
+--save_steps 10 \
+--micro_train_batch_size 2 \
+--train_batch_size 32 \
+--micro_rollout_batch_size 4 \
+--rollout_batch_size 64 \
+--max_samples 100000 \
+--max_epochs 2 \
+--prompt_max_len 2048 \
+--generate_max_len 4096 \
+--zero_stage 3 \
+--bf16 \
+--actor_learning_rate 5e-7 \
+--critic_learning_rate 9e-6 \
+--init_kl_coef 0.01 \
+--prompt_data json@/root/orl2/data \
+--input_key context_messages \
+--apply_chat_template \
+--normalize_reward \
+--packing_samples \
+--adam_offload \
+--flash_attn \
+--gradient_checkpointing \
+--remote_rm_url /root/orl2/smiles_rewarder.py \
+--use_wandb 6a7e6c36b9bc885d48cb355afb10998284b9e8ef \
+--enable_tool_use \
+--num_tool_executors 32 \
+--max_ckpt_mem 100 \
+--advantage_estimator group_norm \
+--n_samples_per_prompt 2 \
+--lora_rank 64 \
+--lora_alpha 128
+```
