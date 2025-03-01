@@ -577,7 +577,7 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
             rewards = experience.info["reward"].cpu().tolist()
             
             # Get the corresponding prompts and responses
-            if not self.packing_samples:
+            if True: #not self.packing_samples:
                 sequences = experience.sequences.cpu()
                 action_mask = experience.action_mask.cpu() if experience.action_mask is not None else None
                 
@@ -613,12 +613,15 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
         # Sort by reward and keep top 3
         self.best_examples = sorted(self.best_examples, key=lambda x: x["reward"], reverse=True)[:3]
         
-        if self.strategy.is_rank_0() and len(self.best_examples) > 0:
-            logger.info(f"Best examples updated. Top reward: {self.best_examples[0]['reward']}")
+        if len(self.best_examples) > 0:
+            print(f"Best examples updated. Top reward: {self.best_examples[0]['reward']}")
             for i, example in enumerate(self.best_examples):
-                logger.info(f"Example {i+1} (reward: {example['reward']:.4f}):")
-                logger.info(f"Prompt: {example['prompt'][:100]}...")
-                logger.info(f"Response: {example['response'][:100]}...")
+                print(f"Example {i+1} (reward: {example['reward']:.4f}):")
+                print(f"Prompt: {example['prompt'][:100]}...")
+                print(f"Response: {example['response'][:100]}...")
+            print("Here's the full prompt:")
+            print(all_prompts[0])
+            print("--------------------------------")
 
     @torch.no_grad()
     def generate_samples(self, all_prompts: List[str], all_labels, **generate_kwargs) -> List[Samples]:
@@ -653,32 +656,21 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
             return prompts
             
         augmented_prompts = []
+        few_shot_context = "Here are some of your past answers that did well, which you may use as starting points:\n"
+        for example in self.best_examples:
+            # Extract assistant response in <answer> tags
+            assistant_response = example["response"]
+            assistant_response = assistant_response.split("<|im_start|>assistant")[1].split("<|im_end|>")[0].strip()
+            answer = assistant_response.split("<answer>")[-1].split("</answer>")[0].strip()
+            few_shot_context += f"Example: <answer>{answer}</answer>\n"
+
+
         for prompt in prompts:
-            # Create few-shot examples with proper im_start and im_end tags
-            few_shot_context = ""
-            for example in self.best_examples:
-                # Extract user message from the prompt
-                user_message = example["prompt"]
-                user_message = user_message.split("<|im_start|>user")[1].split("<|im_end|>")[0].strip()
-                
-                # Extract assistant response, removing any system or user messages that might be in it
-                assistant_response = example["response"]
-                assistant_response = assistant_response.split("<|im_start|>assistant")[1].split("<|im_end|>")[0].strip()
-                
-                # Add user message with im_start and im_end tags
-                few_shot_context += f"<|im_start|>user\n{user_message}<|im_end|>\n"
-                # Add assistant response with im_start and im_end tags
-                few_shot_context += f"<|im_start|>assistant\n{assistant_response}<|im_end|>\n"
+            # Insert our examples at the end of the prompt
+            parts = prompt.split("<|im_start|>assistant")
+            augmented_prompts.append(parts[0] + few_shot_context + "<|im_start|>assistant" + parts[1])
             
-
-            # Insert our examples before the first user message
-            parts = prompt.split("<|im_start|>user", 1)
-            augmented_prompts.append(parts[0] + few_shot_context + "<|im_start|>user" + parts[1])
-
-            
-        if self.strategy.is_rank_0():
-            logger.info(f"Added {len(self.best_examples)} few-shot examples to each prompt")
-            
+        print(f"Added {len(self.best_examples)} few-shot examples to each prompt")
         return augmented_prompts
 
     @torch.no_grad()
